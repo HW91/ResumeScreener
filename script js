@@ -1,0 +1,2430 @@
+// Fixed function to safely parse score values from Google Sheets
+function parseScoreValue(value) {
+  if (value === undefined || value === null || value === '') {
+    return 0;
+  }
+  let cleanValue = String(value).trim();
+  cleanValue = cleanValue.replace(/[^\d.]/g, '');
+  let parsedValue = parseFloat(cleanValue);
+  if (isNaN(parsedValue)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, parsedValue));
+}
+
+// Phone number formatting function
+function formatPhoneNumber(phoneStr) {
+  if (!phoneStr) return phoneStr;
+  
+  // Remove all non-digit characters
+  const digits = phoneStr.replace(/\D/g, '');
+  
+  // Format as XXX-XXX-XXXX for 10 digits
+  if (digits.length === 10) {
+    return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  } 
+  // For 11 digits starting with 1, remove the "1" and format the remaining 10
+  else if (digits.length === 11 && digits[0] === '1') {
+    return `${digits.slice(1, 4)}-${digits.slice(4, 7)}-${digits.slice(7)}`;
+  }
+  
+  // Return original if not a standard phone number length
+  return phoneStr;
+}
+
+// 🧪 TESTING MODE: Set to true for fast polling, false for production
+const TESTING_MODE = true;
+
+// Enhanced timeout and polling management system
+const buttonTimeouts = new Map();
+const callPollingStates = new Map();
+const callPollingTimers = new Map();
+
+// ⭐ STAR FUNCTIONALITY - RESUME PAGE SPECIFIC to avoid conflicts
+const resumeStarUpdateWebhookURL = "https://hook.us1.make.com/y62py8diutyz7iqnagfrzshn9tknw4n3";
+let resumeShowStarredOnly = false;
+
+// Star functionality - RESUME PAGE SPECIFIC to avoid conflicts with call log page
+function toggleResumeStar(element) {
+  const filteredIndex = parseInt(element.getAttribute('data-filtered-index'));
+  
+  if (isNaN(filteredIndex) || filteredIndex >= window.filteredData.length || filteredIndex < 0) {
+    return;
+  }
+  
+  const currentRow = window.filteredData[filteredIndex];
+  if (!currentRow || !Array.isArray(currentRow) || currentRow.length < 15) {
+    return;
+  }
+  
+  const currentStarValue = currentRow[0];
+  const newStarValue = currentStarValue === "1" || currentStarValue === 1 ? "0" : "1";
+  
+  window.filteredData[filteredIndex][0] = newStarValue;
+  
+  const sheetDataIndex = window.sheetData.findIndex(row => 
+    row && Array.isArray(row) && 
+    row[1] === currentRow[1] && 
+    row[6] === currentRow[6]
+  );
+  
+  if (sheetDataIndex !== -1) {
+    window.sheetData[sheetDataIndex][0] = newStarValue;
+  }
+  
+  // Call the global updateTable function
+  if (window.updateTable) {
+    window.updateTable(window.filteredData);
+  }
+  updateResumeStarStatus(currentRow, newStarValue);
+}
+
+function updateResumeStarStatus(rowData, starValue) {
+  const starOnlyData = {
+    "0": starValue,
+    "1": rowData[1],
+    "2": rowData[2],
+    "3": rowData[3],
+    "4": rowData[4],
+    "5": rowData[5],
+    "6": rowData[6],
+    "7": rowData[7],
+    "8": rowData[8],
+    "9": rowData[9],
+    "10": rowData[10],
+    "11": rowData[11],
+    "12": rowData[12],
+    "13": rowData[13],
+    "14": rowData[14],
+    "15": rowData[15],
+    "16": rowData[16],
+    "17": rowData[17],
+    "18": rowData[18],
+    "19": rowData[19],
+    "20": rowData[20],
+    "21": rowData[21],
+    "22": rowData[22],
+    "23": rowData[23],
+    candidate_email: rowData[6],
+    submission_date: rowData[1],
+    record_owner: window.currentUserName,
+    timestamp: new Date().toISOString()
+  };
+  
+  fetch(resumeStarUpdateWebhookURL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(starOnlyData)
+  })
+  .then(response => {
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      return response.json();
+    } else {
+      return response.text();
+    }
+  })
+  .then(data => {
+    // Success
+  })
+  .catch(error => {
+    // Error
+  });
+}
+
+function toggleResumeStarFilter() {
+  resumeShowStarredOnly = !resumeShowStarredOnly;
+  const filterBtn = document.getElementById('starFilterHeader');
+  
+  if (resumeShowStarredOnly) {
+    filterBtn.classList.add('active');
+    filterBtn.title = 'Show all candidates';
+  } else {
+    filterBtn.classList.remove('active');
+    filterBtn.title = 'Show only starred candidates';
+  }
+  
+  if (window.filterData) {
+    window.filterData();
+  }
+}
+
+function clearButtonTimeout(buttonKey) {
+  if (buttonTimeouts.has(buttonKey)) {
+    clearTimeout(buttonTimeouts.get(buttonKey));
+    buttonTimeouts.delete(buttonKey);
+  }
+}
+
+function setButtonTimeout(buttonKey, callback, delay = 10000) {
+  clearButtonTimeout(buttonKey);
+  const timeoutId = setTimeout(() => {
+    callback();
+    buttonTimeouts.delete(buttonKey);
+  }, delay);
+  buttonTimeouts.set(buttonKey, timeoutId);
+  return timeoutId;
+}
+
+function startCallPolling(rowIndex) {
+  const callKey = `call-polling-${rowIndex}`;
+  stopCallPolling(rowIndex);
+  
+  const startTime = Date.now();
+  const pollingState = {
+    rowIndex: rowIndex,
+    startTime: startTime,
+    phase: 'initial_wait',
+    quickCheckCount: 0,
+    regularCheckCount: 0,
+    lastCheckTime: startTime
+  };
+  
+  callPollingStates.set(rowIndex, pollingState);
+  
+  const allPollingStates = {};
+  for (const [key, value] of callPollingStates) {
+    allPollingStates[key] = value;
+  }
+  localStorage.setItem('callPollingStates', JSON.stringify(allPollingStates));
+  
+  scheduleNextPoll(rowIndex);
+}
+
+function scheduleNextPoll(rowIndex) {
+  const pollingState = callPollingStates.get(rowIndex);
+  if (!pollingState) return;
+  
+  const elapsed = Date.now() - pollingState.startTime;
+  let nextPollDelay = 0;
+  
+  if (TESTING_MODE) {
+    const maxTestTime = 5 * 60 * 1000;
+    
+    if (elapsed >= maxTestTime) {
+      completePollling(rowIndex, 'timeout');
+      return;
+    }
+    
+    if (pollingState.phase === 'initial_wait') {
+      nextPollDelay = (10 * 1000) - elapsed;
+      if (nextPollDelay <= 0) {
+        pollingState.phase = 'quick_checks';
+        nextPollDelay = 0;
+      }
+    } else if (pollingState.phase === 'quick_checks') {
+      const targetTimes = [10 * 1000, 20 * 1000, 30 * 1000];
+      const nextTargetTime = targetTimes[pollingState.quickCheckCount];
+      
+      if (nextTargetTime) {
+        nextPollDelay = nextTargetTime - elapsed;
+        if (nextPollDelay <= 0) nextPollDelay = 0;
+      } else {
+        pollingState.phase = 'regular_intervals';
+        nextPollDelay = (60 * 1000) - elapsed;
+        if (nextPollDelay <= 0) nextPollDelay = 0;
+      }
+    } else if (pollingState.phase === 'regular_intervals') {
+      const baseTime = 60 * 1000;
+      const interval = 30 * 1000;
+      const nextRegularTime = baseTime + (pollingState.regularCheckCount * interval);
+      
+      nextPollDelay = nextRegularTime - elapsed;
+      if (nextPollDelay <= 0) nextPollDelay = 0;
+    }
+  } else {
+    const twoHours = 2 * 60 * 60 * 1000;
+    
+    if (elapsed >= twoHours) {
+      completePollling(rowIndex, 'timeout');
+      return;
+    }
+    
+    if (pollingState.phase === 'initial_wait') {
+      nextPollDelay = (5 * 60 * 1000) - elapsed;
+      if (nextPollDelay <= 0) {
+        pollingState.phase = 'quick_checks';
+        nextPollDelay = 0;
+      }
+    } else if (pollingState.phase === 'quick_checks') {
+      const targetTimes = [5 * 60 * 1000, 7 * 60 * 1000, 9 * 60 * 1000];
+      const nextTargetTime = targetTimes[pollingState.quickCheckCount];
+      
+      if (nextTargetTime) {
+        nextPollDelay = nextTargetTime - elapsed;
+        if (nextPollDelay <= 0) nextPollDelay = 0;
+      } else {
+        pollingState.phase = 'regular_intervals';
+        nextPollDelay = (24 * 60 * 1000) - elapsed;
+        if (nextPollDelay <= 0) nextPollDelay = 0;
+      }
+    } else if (pollingState.phase === 'regular_intervals') {
+      const baseTime = 24 * 60 * 1000;
+      const interval = 15 * 60 * 1000;
+      const nextRegularTime = baseTime + (pollingState.regularCheckCount * interval);
+      
+      nextPollDelay = nextRegularTime - elapsed;
+      if (nextPollDelay <= 0) nextPollDelay = 0;
+    }
+  }
+  
+  const timerId = setTimeout(() => {
+    executeCallPoll(rowIndex);
+  }, Math.max(nextPollDelay, 100));
+  
+  callPollingTimers.set(rowIndex, timerId);
+}
+
+function executeCallPoll(rowIndex, retryCount = 0) {
+  const pollingState = callPollingStates.get(rowIndex);
+  if (!pollingState) return;
+  
+  const row = window.filteredData[rowIndex];
+  if (row && row[18] && row[18].trim() !== "") {
+    completePollling(rowIndex, 'call_ended');
+    return;
+  }
+  
+  fetch(window.makeWebhookURL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ 
+      username: window.currentUserName,
+      action: "getData"
+    })
+  }).then(response => {
+    if (!response.ok) throw new Error(`Status ${response.status}`);
+    return response.json();
+  }).then(data => {
+    updateSheetDataFromPolling(data);
+    
+    const updatedRow = window.filteredData[rowIndex];
+    if (updatedRow && updatedRow[18] && updatedRow[18].trim() !== "") {
+      completePollling(rowIndex, 'call_ended');
+      return;
+    }
+    
+    if (pollingState.phase === 'quick_checks') {
+      pollingState.quickCheckCount++;
+      if (pollingState.quickCheckCount >= 3) {
+        pollingState.phase = 'regular_intervals';
+      }
+    } else if (pollingState.phase === 'regular_intervals') {
+      pollingState.regularCheckCount++;
+    }
+    
+    const allPollingStates = {};
+    for (const [key, value] of callPollingStates) {
+      allPollingStates[key] = value;
+    }
+    localStorage.setItem('callPollingStates', JSON.stringify(allPollingStates));
+    
+    scheduleNextPoll(rowIndex);
+    
+  }).catch(error => {
+    if (retryCount < 3) {
+      const retryDelay = Math.pow(2, retryCount) * 1000;
+      setTimeout(() => {
+        executeCallPoll(rowIndex, retryCount + 1);
+      }, retryDelay);
+    } else {
+      scheduleNextPoll(rowIndex);
+    }
+  });
+}
+
+function updateSheetDataFromPolling(data) {
+  try {
+    let records = [];
+    
+    if (Array.isArray(data) && data.length > 0) {
+      if (data[0] && data[0].body && Array.isArray(data[0].body)) {
+        records = data[0].body.map(item => item.data || item);
+      } else if (data[0] && data[0].data) {
+        records = data.map(item => item.data);
+      } else {
+        records = data;
+      }
+    }
+    
+    if (records.length > 0) {
+      const newSheetData = records.map(record => [
+        record["0"] || "", record["1"] || "", record["2"] || "", record["3"] || "",
+        record["4"] || "", record["5"] || "", record["6"] || "", record["7"] || "",
+        record["8"] || "", record["9"] || "", record["10"] || "", record["11"] || "",
+        record["12"] || "", record["13"] || "", record["14"] || "", record["15"] || "",
+        record["16"] || "", normalizeDate(record["17"]) || "", normalizeDate(record["18"]) || "", record["19"] || "",
+        record["20"] || "", record["21"] || "", record["22"] || "", record["23"] || ""
+      ]);
+      
+      window.sheetData = newSheetData;
+      if (window.filterData) {
+        window.filterData();
+      }
+    }
+  } catch (error) {
+    // Error updating sheet data from polling
+  }
+}
+
+function completePollling(rowIndex, reason) {
+  stopCallPolling(rowIndex);
+  
+  let stateObj = window.buttonStates.get(rowIndex);
+  if (stateObj) {
+    if (reason === 'call_ended') {
+      stateObj.call = 2;
+    } else if (reason === 'timeout') {
+      stateObj.call = 0;
+    }
+  }
+  
+  if (window.updateTable) {
+    window.updateTable(window.filteredData);
+  }
+}
+
+function stopCallPolling(rowIndex) {
+  if (callPollingTimers.has(rowIndex)) {
+    clearTimeout(callPollingTimers.get(rowIndex));
+    callPollingTimers.delete(rowIndex);
+  }
+  
+  callPollingStates.delete(rowIndex);
+  
+  const allPollingStates = {};
+  for (const [key, value] of callPollingStates) {
+    allPollingStates[key] = value;
+  }
+  localStorage.setItem('callPollingStates', JSON.stringify(allPollingStates));
+}
+
+function countActiveCalls() {
+  let activeCount = 0;
+  for (const [rowIndex, stateObj] of window.buttonStates) {
+    if (stateObj.call === 1 || stateObj.call === 3) {
+      activeCount++;
+    }
+  }
+  for (const rowIndex of callPollingStates.keys()) {
+    const stateObj = window.buttonStates.get(rowIndex);
+    if (!stateObj || (stateObj.call !== 1 && stateObj.call !== 3)) {
+      activeCount++;
+    }
+  }
+  return activeCount;
+}
+
+function restorePollingStates() {
+  try {
+    const savedStates = localStorage.getItem('callPollingStates');
+    if (savedStates) {
+      const pollingStates = JSON.parse(savedStates);
+      for (const [rowIndex, state] of Object.entries(pollingStates)) {
+        const numericRowIndex = parseInt(rowIndex);
+        callPollingStates.set(numericRowIndex, state);
+        
+        scheduleNextPoll(numericRowIndex);
+        
+        let stateObj = window.buttonStates.get(numericRowIndex);
+        if (!stateObj) {
+          stateObj = { email: 0, call: 0 };
+          window.buttonStates.set(numericRowIndex, stateObj);
+        }
+      }
+    }
+  } catch (error) {
+    localStorage.removeItem('callPollingStates');
+  }
+}
+
+function cleanupTimeouts() {
+  for (const [buttonKey, timeoutId] of buttonTimeouts) {
+    clearTimeout(timeoutId);
+  }
+  buttonTimeouts.clear();
+  
+  for (const [rowIndex, timerId] of callPollingTimers) {
+    clearTimeout(timerId);
+  }
+  callPollingTimers.clear();
+  callPollingStates.clear();
+}
+
+window.addEventListener('beforeunload', cleanupTimeouts);
+
+let notificationInterval = null;
+let lastFormSubmissionTime = 0;
+let expectedNewResumes = 0;
+
+function checkForNotifications() {
+  const timeSinceSubmission = Date.now() - lastFormSubmissionTime;
+  if (timeSinceSubmission < 45000) {
+    return;
+  }
+
+  fetch("https://hook.us1.make.com/k86fkvob6cp7hnjmlry7cl5ogp3qsrsu", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ 
+      username: window.currentUserName,
+      action: "getData"
+    })
+  }).then(response => response.json())
+  .then(data => {
+    let records = [];
+    if (Array.isArray(data) && data.length > 0) {
+      if (data[0] && data[0].body && Array.isArray(data[0].body)) {
+        records = data[0].body.map(item => item.data || item);
+      } else if (data[0] && data[0].data) {
+        records = data.map(item => item.data);
+      } else {
+        records = data;
+      }
+    }
+
+    const currentCount = records.length;
+    const baselineCount = parseInt(localStorage.getItem('baselineRecordCount') || '0');
+
+    if (currentCount > baselineCount) {
+      const newCount = currentCount - baselineCount;
+      updateNotificationButton(newCount);
+    } else {
+      const btn = document.getElementById("refreshButton");
+      if (btn && !btn.disabled) {
+        btn.textContent = "0 new resume(s)";
+        btn.classList.remove('has-new-resumes');
+      }
+    }
+  }).catch(error => {
+    // Silently handle notification check failures
+  });
+}
+
+function updateNotificationButton(count) {
+  const btn = document.getElementById("refreshButton");
+  if (btn && !btn.disabled) {
+    btn.textContent = `${count} new resume${count === 1 ? '' : 's'}`;
+    btn.classList.add('has-new-resumes');
+    
+    btn.style.backgroundColor = '#fe28da';
+    btn.style.transform = 'scale(1.05)';
+    
+    setTimeout(() => {
+      btn.style.backgroundColor = '';
+      btn.style.transform = '';
+    }, 300);
+  }
+}
+
+function recordFormSubmission(resumeCount = 0) {
+  lastFormSubmissionTime = Date.now();
+  expectedNewResumes = resumeCount;
+
+  const currentBaseline = window.sheetData ? window.sheetData.length : 0;
+  localStorage.setItem('baselineRecordCount', currentBaseline.toString());
+
+  const btn = document.getElementById("refreshButton");
+  if (btn) {
+    btn.textContent = "0 new resume(s)";
+    btn.classList.remove('has-new-resumes');
+  }
+
+  // Start targeted polling: wait 20 seconds, then poll every 10 seconds for 1 minute
+  startTargetedPolling();
+}
+
+function startTargetedPolling() {
+  let pollCount = 0;
+  const maxPolls = 4; // Poll at 20s, 30s, 40s, 50s
+
+  // First poll after 20 seconds
+  setTimeout(() => {
+    checkForNotifications();
+    pollCount++;
+
+    // Then poll every 10 seconds for the remaining polls
+    const targetedInterval = setInterval(() => {
+      checkForNotifications();
+      pollCount++;
+
+      if (pollCount >= maxPolls) {
+        clearInterval(targetedInterval);
+      }
+    }, 10000);
+
+  }, 20000);
+}
+
+function getScoreColor(score) {
+  if(score >= 90) return "#fe28da";
+  else if(score >= 80) return "#d510ab";
+  else if(score >= 70) return "#a710c1";
+  else if(score >= 60) return "#7410d6";
+  else return "#140F3B";
+}
+
+let currentPopupElement = null;
+let popupTimeout = null;
+
+function showScorePopup(element, score) {
+  const popup = document.getElementById('scorePopup');
+  if (!popup) return;
+  
+  if (popupTimeout) {
+    clearTimeout(popupTimeout);
+    popupTimeout = null;
+  }
+  
+  currentPopupElement = element;
+  const rect = element.getBoundingClientRect();
+  
+  const rowIndex = parseInt(element.getAttribute('data-row-index'));
+  const rowData = window.filteredData && window.filteredData[rowIndex] ? window.filteredData[rowIndex] : null;
+  
+  const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+  const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const popupWidth = viewportWidth <= 480 ? 320 : viewportWidth <= 768 ? 360 : 420;
+  const popupHeight = 400;
+  
+  let leftPosition = rect.left + scrollLeft - popupWidth - 20;
+  let topPosition = rect.top + scrollTop - 50;
+  
+  if (leftPosition < 10) {
+    leftPosition = rect.right + scrollLeft + 10;
+    
+    if (leftPosition + popupWidth > viewportWidth - 10) {
+      leftPosition = Math.max(10, (viewportWidth - popupWidth) / 2);
+    }
+  }
+  
+  if (topPosition < 10) {
+    topPosition = 10;
+  } else if (topPosition + popupHeight > viewportHeight - 10) {
+    topPosition = Math.max(10, viewportHeight - popupHeight - 10);
+  }
+  
+  popup.style.left = leftPosition + 'px';
+  popup.style.top = topPosition + 'px';
+  
+  const categories = [
+    { 
+      name: 'skills', 
+      percentage: rowData ? parseScoreValue(rowData[19]) : 0
+    },
+    { 
+      name: 'experience', 
+      percentage: rowData ? parseScoreValue(rowData[20]) : 0
+    },
+    { 
+      name: 'career', 
+      percentage: rowData ? parseScoreValue(rowData[21]) : 0
+    },
+    { 
+      name: 'education', 
+      percentage: rowData ? parseScoreValue(rowData[22]) : 0
+    },
+    { 
+      name: 'resume', 
+      percentage: rowData ? parseScoreValue(rowData[23]) : 0
+    }
+  ];
+  
+  categories.forEach(category => {
+    const barFill = popup.querySelector(`[data-category="${category.name}"]`);
+    const percentageElement = barFill ? barFill.nextElementSibling : null;
+    
+    if (barFill && percentageElement) {
+      const roundedPercentage = Math.round(category.percentage);
+      
+      barFill.style.backgroundColor = getScoreColor(category.percentage);
+      
+      barFill.style.height = '0%';
+      barFill.classList.remove('animated');
+      percentageElement.textContent = roundedPercentage + '%';
+      
+      setTimeout(() => {
+        barFill.style.height = category.percentage + '%';
+        barFill.classList.add('animated');
+      }, 100);
+    }
+  });
+  
+  popup.classList.add('show');
+  
+  setTimeout(setupDescriptionToggle, 100);
+}
+
+function hideScorePopup() {
+  const popup = document.getElementById('scorePopup');
+  if (popup) {
+    popup.classList.remove('show');
+  }
+  currentPopupElement = null;
+}
+
+function handleScoreClick(element, score, event) {
+  event.preventDefault();
+  event.stopPropagation();
+  
+  const popup = document.getElementById('scorePopup');
+  
+  if (currentPopupElement === element && popup && popup.classList.contains('show')) {
+    hideScorePopup();
+  } else {
+    showScorePopup(element, score);
+  }
+}
+
+function toggleDescription(event) {
+  event.preventDefault();
+  const details = document.getElementById('descriptionDetails');
+  const link = event.target;
+  
+  if (details.classList.contains('show')) {
+    details.classList.remove('show');
+    link.textContent = 'Full description';
+  } else {
+    details.classList.add('show');
+    link.textContent = 'Hide description';
+  }
+}
+
+document.addEventListener('click', function(e) {
+  const popup = document.getElementById('scorePopup');
+  const scoreCircle = e.target.closest('.score-circle');
+  
+  if (!scoreCircle && !popup.contains(e.target)) {
+    if (window.hideScorePopup) window.hideScorePopup();
+  }
+});
+
+document.addEventListener('touchstart', function(e) {
+  const popup = document.getElementById('scorePopup');
+  const scoreCircle = e.target.closest('.score-circle');
+  
+  if (!scoreCircle && !popup.contains(e.target)) {
+    if (window.hideScorePopup) window.hideScorePopup();
+  }
+});
+
+setTimeout(function() {
+  const popup = document.getElementById('scorePopup');
+  if (popup) {
+    popup.addEventListener('click', function(e) {
+      e.stopPropagation();
+    });
+    popup.addEventListener('touchstart', function(e) {
+      e.stopPropagation();
+    });
+  }
+}, 100);
+
+function setupDescriptionToggle() {
+  const descriptionLink = document.getElementById('fullDescriptionLink');
+  if (descriptionLink && !descriptionLink.hasAttribute('data-listener-added')) {
+    descriptionLink.addEventListener('click', toggleDescription);
+    descriptionLink.setAttribute('data-listener-added', 'true');
+  }
+}
+
+window.showScorePopup = showScorePopup;
+window.hideScorePopup = hideScorePopup;
+window.handleScoreClick = handleScoreClick;
+window.toggleDescription = toggleDescription;
+
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
+let popupStartX = 0;
+let popupStartY = 0;
+
+function makePopupDraggable() {
+  const popup = document.getElementById('scorePopup');
+  
+  if (!popup) return;
+
+  popup.addEventListener('mousedown', startDrag);
+  document.addEventListener('mousemove', drag);
+  document.addEventListener('mouseup', stopDrag);
+
+  popup.addEventListener('touchstart', startDragTouch, { passive: false });
+  document.addEventListener('touchmove', dragTouch, { passive: false });
+  document.addEventListener('touchend', stopDrag);
+
+  function startDrag(e) {
+    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'A' || e.target.closest('button') || e.target.closest('a')) {
+      return;
+    }
+    
+    e.preventDefault();
+    isDragging = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    
+    const rect = popup.getBoundingClientRect();
+    popupStartX = rect.left;
+    popupStartY = rect.top;
+    
+    popup.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+  }
+
+  function startDragTouch(e) {
+    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'A' || e.target.closest('button') || e.target.closest('a')) {
+      return;
+    }
+    
+    e.preventDefault();
+    const touch = e.touches[0];
+    isDragging = true;
+    dragStartX = touch.clientX;
+    dragStartY = touch.clientY;
+    
+    const rect = popup.getBoundingClientRect();
+    popupStartX = rect.left;
+    popupStartY = rect.top;
+    
+    popup.classList.add('dragging');
+  }
+
+  function drag(e) {
+    if (!isDragging) return;
+    e.preventDefault();
+    
+    const deltaX = e.clientX - dragStartX;
+    const deltaY = e.clientY - dragStartY;
+    
+    let newX = popupStartX + deltaX;
+    let newY = popupStartY + deltaY;
+    
+    const maxX = window.innerWidth - popup.offsetWidth;
+    const maxY = window.innerHeight - popup.offsetHeight;
+    
+    newX = Math.max(0, Math.min(maxX, newX));
+    newY = Math.max(0, Math.min(maxY, newY));
+    
+    popup.style.left = newX + 'px';
+    popup.style.top = newY + 'px';
+  }
+
+  function dragTouch(e) {
+    if (!isDragging) return;
+    e.preventDefault();
+    
+    const touch = e.touches[0];
+    const deltaX = touch.clientX - dragStartX;
+    const deltaY = touch.clientY - dragStartY;
+    
+    let newX = popupStartX + deltaX;
+    let newY = popupStartY + deltaY;
+    
+    const maxX = window.innerWidth - popup.offsetWidth;
+    const maxY = window.innerHeight - popup.offsetHeight;
+    
+    newX = Math.max(0, Math.min(maxX, newX));
+    newY = Math.max(0, Math.min(maxY, newY));
+    
+    popup.style.left = newX + 'px';
+    popup.style.top = newY + 'px';
+  }
+
+  function stopDrag() {
+    if (!isDragging) return;
+    isDragging = false;
+    popup.classList.remove('dragging');
+    document.body.style.userSelect = '';
+  }
+}
+
+setTimeout(makePopupDraggable, 100);
+
+// Global variables - initialize early to prevent undefined errors
+let currentUserName = '';
+let sheetData = [];
+let filteredData = [];
+window.filteredData = filteredData;
+window.sheetData = sheetData;
+window.currentUserName = currentUserName;
+let currentPage = 1;
+const recordsPerPage = 20;
+const buttonStates = new Map();
+window.buttonStates = buttonStates;
+const makeWebhookURL = "https://hook.us1.make.com/k86fkvob6cp7hnjmlry7cl5ogp3qsrsu";
+window.makeWebhookURL = makeWebhookURL;
+
+document.addEventListener("DOMContentLoaded", function() {
+  function extractUsername() {
+    let usernameSpan = document.querySelector("span.theme-portal-username[data-portal-user-name]");
+    if (usernameSpan) {
+      const spanText = usernameSpan.textContent || "";
+      const cleaned = spanText.replace(/^Hi,\s*/i, "").trim();
+      if (cleaned) return cleaned;
+    }
+    
+    const usernameSelectors = [
+      ".theme-portal-username",
+      "[data-portal-user-name]", 
+      ".username",
+      ".user-name",
+      ".portal-username"
+    ];
+    
+    for (const selector of usernameSelectors) {
+      const element = document.querySelector(selector);
+      if (element) {
+        const text = element.textContent || "";
+        const match = text.match(/(?:Hi|Hello),?\s*([a-zA-Z0-9_-]+)/i);
+        if (match && match[1]) {
+          return match[1].trim();
+        }
+      }
+    }
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlUsername = urlParams.get('user') || urlParams.get('username');
+    if (urlUsername) return urlUsername;
+    
+    const userMeta = document.querySelector('meta[name="user"], meta[name="username"]');
+    if (userMeta && userMeta.getAttribute('content')) {
+      return userMeta.getAttribute('content');
+    }
+    
+    return "";
+  }
+  
+  const username = extractUsername();
+  const usernameInput = document.getElementById("username");
+  if(usernameInput) usernameInput.value = username || '';
+  
+  if (username && username.trim()) {
+    localStorage.setItem('dashboard_username_verified', username);
+  }
+  
+  async function loadUsageData() {
+    const progressBar = document.getElementById('usageProgressBar');
+    const usageText = document.getElementById('usageText');
+    const currentUsername = username || localStorage.getItem('dashboard_username_verified') || '';
+    
+    if (!currentUsername) {
+      usageText.textContent = 'Unable to load usage data - no username detected';
+      return;
+    }
+    
+    try {
+      usageText.textContent = 'Loading usage data...';
+      
+      const response = await fetch('https://hook.us1.make.com/sghmkeguy4z2rnh7m63daqliaoaqpt49', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          username: currentUsername,
+          action: 'getUsage'
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      const responseText = await response.text();
+      
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (jsonError) {
+        const creditsUsed = 0;
+        const creditsTotal = 100;
+        const percentage = 0;
+        progressBar.style.width = percentage + '%';
+        usageText.textContent = `${creditsUsed} of ${creditsTotal} credits used this month (${percentage}%)`;
+        return;
+      }
+      
+      let creditsUsed = 0;
+      let creditsTotal = 100;
+      
+      function parseValue(value) {
+        if (value === undefined || value === null) return 0;
+        
+        let cleanValue = String(value).trim();
+        cleanValue = cleanValue.replace(/\{\{.*?\}\}/g, '').trim();
+        const numberMatch = cleanValue.match(/\d+(\.\d+)?/);
+        const parsed = numberMatch ? parseFloat(numberMatch[0]) : 0;
+        
+        return parsed;
+      }
+      
+      if (data.creditsUsed !== undefined && data.creditsTotal !== undefined) {
+        creditsUsed = parseValue(data.creditsUsed);
+        creditsTotal = parseValue(data.creditsTotal) || 100;
+      } else if (data.usage !== undefined) {
+        creditsUsed = parseValue(data.usage.used);
+        creditsTotal = parseValue(data.usage.total) || 100;
+      } else if (data.used !== undefined && data.total !== undefined) {
+        creditsUsed = parseValue(data.used);
+        creditsTotal = parseValue(data.total) || 100;
+      } else {
+        const responseStr = JSON.stringify(data);
+        const numbers = responseStr.match(/\d+/g);
+        if (numbers && numbers.length >= 2) {
+          creditsUsed = parseInt(numbers[0]) || 0;
+          creditsTotal = parseInt(numbers[1]) || 100;
+        }
+      }
+      
+      const percentage = Math.min((creditsUsed / creditsTotal) * 100, 100);
+      progressBar.style.width = percentage + '%';
+      
+      usageText.textContent = `${creditsUsed} of ${creditsTotal} credits used this month (${Math.round(percentage)}%)`;
+      
+    } catch (error) {
+      usageText.textContent = 'Unable to load usage data';
+      progressBar.style.width = '0%';
+    }
+  }
+  
+  const jobSelect = document.getElementById("job");
+  const joptionContainers = { publicURL: document.getElementById("joption1-container"), uploadFile: document.getElementById("joption2-container"), pasteText: document.getElementById("joption3-container") };
+  jobSelect && jobSelect.addEventListener("change", function () { Object.values(joptionContainers).forEach(el => el.style.display = "none"); if (this.value && joptionContainers[this.value]) { joptionContainers[this.value].style.display = "block"; } });
+  const resumeSelect = document.getElementById("resume");
+  const roptionContainers = { publicURL: document.getElementById("roption1-container"), uploadFile: document.getElementById("roption2-container"), pasteText: document.getElementById("roption3-container") };
+  resumeSelect && resumeSelect.addEventListener("change", function () { Object.values(roptionContainers).forEach(el => el.style.display = "none"); if (this.value && roptionContainers[this.value]) { roptionContainers[this.value].style.display = "block"; } });
+  const positionSelect = document.getElementById("position");
+  const questionFields = document.querySelectorAll(".question-field");
+  positionSelect && positionSelect.addEventListener("change", function () { questionFields.forEach(f => f.style.display = this.value === "yes" ? "block" : "none"); });
+  
+  const MAX_FILE_SIZE = 1 * 1024 * 1024;
+  const MAX_RESUME_FILES = 10;
+  document.querySelectorAll('input[type="file"]').forEach(input => {
+    input.addEventListener("change", function () {
+      if (this.id === "roption2" && this.files.length > MAX_RESUME_FILES) { alert(`You can upload max ${MAX_RESUME_FILES} files. You selected ${this.files.length}`); this.value = ""; return; }
+      for (const f of this.files) { if (f.size > MAX_FILE_SIZE) { alert("One or more files exceed 1MB limit. Please select smaller files."); this.value = ""; return; } }
+    });
+  });
+  
+  let resumeCount = 1;
+  const MAX_RESUMES = 10;
+  const resumeContainer = document.getElementById("resume-textareas-container");
+  const addResumeBtn = document.getElementById("add-resume-button");
+  const resumeCountInfo = document.getElementById("resume-count-info");
+  
+  function updateResumeCountInfo() {
+    if(!resumeCountInfo || !addResumeBtn) return;
+    resumeCountInfo.textContent = `${resumeCount} of ${MAX_RESUMES} resumes`;
+    if (resumeCount >= MAX_RESUMES) {
+      addResumeBtn.disabled = true;
+      addResumeBtn.style.opacity = "0.5";
+      addResumeBtn.style.cursor = "not-allowed";
+    } else {
+      addResumeBtn.disabled = false;
+      addResumeBtn.style.opacity = "1";
+      addResumeBtn.style.cursor = "pointer";
+    }
+  }
+  
+  addResumeBtn && addResumeBtn.addEventListener("click", () => {
+    if (resumeCount >= MAX_RESUMES) { alert(`You can add a maximum of ${MAX_RESUMES} resumes.`); return; }
+    resumeCount++;
+    const newWrapper = document.createElement("div");
+    newWrapper.className = "resume-textarea-wrapper";
+    newWrapper.innerHTML = `<label for="roption3-${resumeCount}">Option 3: Paste Resume #${resumeCount}</label> <textarea id="roption3-${resumeCount}" name="roption3-${resumeCount}" class="resume-textarea" placeholder="Copy and paste your resume here"></textarea>
+  <small>You can resize this text box by dragging the bottom-right corner</small>
+  <button type="button" class="remove-resume-button" title="Remove this resume">×</button>
+`;
+    resumeContainer.appendChild(newWrapper);
+    const removeBtn = newWrapper.querySelector(".remove-resume-button");
+    removeBtn.addEventListener("click", () => {
+      resumeContainer.removeChild(newWrapper);
+      resumeCount--;
+      const wrappers = resumeContainer.querySelectorAll(".resume-textarea-wrapper");
+      wrappers.forEach((wrapper, i) => {
+        const num = i + 1;
+        const label = wrapper.querySelector("label");
+        const textarea = wrapper.querySelector("textarea");
+        label.setAttribute("for", `roption3-${num}`);
+        label.textContent = `Option 3: Paste Resume #${num}`;
+        textarea.id = `roption3-${num}`;
+        textarea.name = `roption3-${num}`;
+      });
+      updateResumeCountInfo();
+    });
+    updateResumeCountInfo();
+  });
+  
+  document.querySelectorAll(".resume-textarea-wrapper").forEach((wrapper, index) => {
+    if (index === 0 && resumeCount === 1) return;
+    if (!wrapper.querySelector(".remove-resume-button")) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "remove-resume-button";
+      btn.title = "Remove this resume";
+      btn.textContent = "×";
+      wrapper.appendChild(btn);
+      btn.addEventListener("click", () => {
+        wrapper.parentNode.removeChild(wrapper);
+        resumeCount--;
+        updateResumeCountInfo();
+      });
+    }
+  });
+  updateResumeCountInfo();
+  
+  async function extractTextFromPDF(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let fullText = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items.map(item => item.str).join(" ");
+      fullText += pageText + "\n\n";
+    }
+    return fullText.trim();
+  }
+  
+  const loadingOverlay = document.getElementById("loadingOverlay");
+  const spinner = document.getElementById("spinner");
+  const checkmark = document.getElementById("checkmark");
+  const loadingText = document.getElementById("loading-text");
+  const statusMessage = document.getElementById("status-message");
+  
+  function showLoadingAnimation() {
+    checkmark.style.opacity = "0";
+    spinner.style.opacity = "1";
+    spinner.classList.add("spinning");
+    loadingText.style.opacity = "1";
+    loadingText.textContent = "Processing...";
+    statusMessage.textContent = "Your resume and job files are being submitted...";
+    loadingOverlay.style.display = "flex";
+  }
+  
+  function stopLoadingAnimation() {
+    spinner.classList.remove("spinning");
+    spinner.style.opacity = "0";
+    loadingText.style.opacity = "0";
+    checkmark.style.opacity = "1";
+    checkmark.style.animation = "drawCheck 0.5s forwards";
+
+    statusMessage.textContent = "Success! Your results will be available shortly. Please feel free to submit additional resumes.";
+
+    setTimeout(() => {
+      loadingOverlay.style.display = "none";
+
+      // Reset the form
+      document.getElementById("customResumeForm").reset();
+
+      // Hide all conditional fields
+      document.querySelectorAll('.conditional-field').forEach(field => {
+        field.style.display = 'none';
+      });
+
+      // Reset resume count
+      resumeCount = 1;
+      const resumeContainer = document.getElementById("resume-textareas-container");
+      const firstWrapper = resumeContainer.querySelector('.resume-textarea-wrapper');
+      // Remove all but the first resume textarea
+      const allWrappers = resumeContainer.querySelectorAll('.resume-textarea-wrapper');
+      for (let i = 1; i < allWrappers.length; i++) {
+        allWrappers[i].remove();
+      }
+      updateResumeCountInfo();
+
+      // Hide form response
+      const formResponse = document.getElementById("formResponse");
+      if (formResponse) {
+        formResponse.style.display = "none";
+      }
+    }, 2000);
+  }
+  
+  function countUploadedResumes(formData) {
+    let count = 0;
+    const resumeSource = formData.get("resume");
+    if (resumeSource === "uploadFile") {
+      count = window.uploadedResumeCount || 1;
+    } else if (resumeSource === "pasteText") {
+      let idx = 1;
+      while (formData.has(`roption3-${idx}`)) {
+        if (formData.get(`roption3-${idx}`).trim() !== "") count++;
+        idx++;
+      }
+    } else if(resumeSource === "publicURL") {
+      const url = formData.get("roption1");
+      count = url && url.trim() ? 1 : 0;
+    }
+    return count || 1;
+  }
+  
+  document.getElementById("customResumeForm").addEventListener("submit", async function(e) {
+    e.preventDefault();
+    const jobVal = jobSelect.value;
+    const resumeVal = resumeSelect.value;
+    const formResponse = document.getElementById("formResponse");
+    formResponse.style.display = "none";
+    if (!jobVal) { alert("Please select a job source in Step 1."); jobSelect.focus(); return; }
+    if (!resumeVal) { alert("Please select a resume source in Step 2."); resumeSelect.focus(); return; }
+    if (jobVal === "pasteText") {
+      const jText = document.getElementById("joption3");
+      if (!jText.value.trim()) { alert("Please paste a job description in the text box."); jText.focus(); return; }
+    }
+    if (resumeVal === "pasteText") {
+      const textareas = document.querySelectorAll(".resume-textarea");
+      if (![...textareas].some(ta => ta.value.trim() !== "")) {
+        alert("Please paste at least one resume in the text boxes.");
+        if(textareas[0]) textareas[0].focus();
+        return;
+      }
+    }
+    showLoadingAnimation();
+    try {
+      let response;
+      const originalFormData = new FormData(this);
+      originalFormData.set("username", extractUsername());
+      
+      if (jobVal === "uploadFile") {
+        const jobFileInput = document.getElementById("joption2");
+        const jobFile = jobFileInput.files[0];
+        if (!jobFile) throw new Error("Please upload a job description file.");
+        
+        let jobText = "";
+        if (jobFile.type === "application/pdf") {
+          jobText = await extractTextFromPDF(jobFile) || `[No text extracted from ${jobFile.name}]`;
+        } else if (/text\/plain/.test(jobFile.type) || jobFile.name.toLowerCase().endsWith(".txt") || jobFile.type === "") {
+          jobText = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject("Error reading text file");
+            reader.readAsText(jobFile);
+          });
+        } else {
+          throw new Error(`Unsupported job file type: ${jobFile.name}`);
+        }
+        
+        originalFormData.delete("joption2");
+        originalFormData.set("joption3", jobText);
+      }
+      
+      if (resumeVal === "uploadFile") {
+        const fileInput = document.getElementById("roption2");
+        const files = fileInput.files;
+        if (!files.length) throw new Error("Please upload at least one resume file.");
+        const extractedTexts = [];
+        for (const file of files) {
+          if (file.type === "application/pdf") {
+            extractedTexts.push(await extractTextFromPDF(file) || `[No text extracted from ${file.name}]`);
+          } else if (/text\/plain/.test(file.type) || file.name.toLowerCase().endsWith(".txt") || file.type === "") {
+            extractedTexts.push(await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = () => reject("Error reading text file");
+              reader.readAsText(file);
+            }));
+          } else {
+            throw new Error(`Unsupported file type: ${file.name}`);
+          }
+        }
+        
+        originalFormData.delete("roption2");
+        extractedTexts.forEach((text, idx) => originalFormData.append(`roption3-${idx + 1}`, text));
+        window.uploadedResumeCount = extractedTexts.length;
+      } else {
+        window.uploadedResumeCount = countUploadedResumes(originalFormData);
+      }
+      
+      if (jobVal === "pasteText") {
+        const jTextArea = document.getElementById("joption3");
+        if (jTextArea && jTextArea.value.trim() !== "") {
+          originalFormData.set("joption3", jTextArea.value.trim());
+        }
+      }
+      
+      // Fire off the webhook but don't wait for response
+      fetch("https://hook.us1.make.com/n2qll3gblut2oqd6x7x149i650l3s1dx", {
+        method: "POST",
+        body: originalFormData
+      }).catch(error => {
+        // Silently handle webhook errors since we're not waiting for response
+        console.log("Webhook submission error:", error);
+      });
+
+      // Record the form submission for notification system
+      recordFormSubmission(countUploadedResumes(originalFormData));
+
+      // Show success after 5 seconds
+      setTimeout(() => {
+        stopLoadingAnimation();
+      }, 5000);
+
+    } catch (error) {
+      statusMessage.textContent = "Error submitting form. Please try again.";
+      setTimeout(() => {
+        loadingOverlay.style.display = "none";
+      }, 3000);
+      formResponse.textContent = "There was a problem submitting your form. Please try again.";
+      formResponse.className = "form-response error";
+      formResponse.style.display = "block";
+    }
+  });
+  
+  currentUserName = username || '';
+  window.currentUserName = currentUserName;
+  const userNameSpan = document.getElementById('currentUserName');
+  if(userNameSpan) userNameSpan.textContent = currentUserName;
+  const recordsCountEl = document.getElementById('recordsCount');
+  
+  let lastRecordCount = 0;
+  let newRecordCount = 0;
+  
+  function detectLoggedInUser() {
+    let detectedUser = currentUserName || '';
+    
+    const savedUsername = localStorage.getItem('dashboard_username_verified');
+    if (savedUsername && savedUsername.trim()) {
+      detectedUser = savedUsername;
+    } else {
+      detectedUser = extractUsername();
+      
+      if (!detectedUser || !detectedUser.trim()) {
+        detectedUser = localStorage.getItem('username') || sessionStorage.getItem('username') || '';
+      }
+      if (!detectedUser || !detectedUser.trim()) {
+        const promptedName = localStorage.getItem('promptedUsername');
+        if (promptedName && promptedName.trim()) {
+          detectedUser = promptedName;
+        } else {
+          const name = prompt("Please enter your username to access the dashboard:", "");
+          if (name && name.trim()) {
+            detectedUser = name.trim();
+            localStorage.setItem('promptedUsername', detectedUser);
+          } else {
+            alert("Username is required to access the dashboard.");
+            return;
+          }
+        }
+      }
+      
+      if (detectedUser && detectedUser.trim()) {
+        localStorage.setItem('dashboard_username_verified', detectedUser);
+      }
+    }
+    
+    if (!detectedUser || !detectedUser.trim()) {
+      alert("Access denied: No valid username detected.");
+      return;
+    }
+    
+    currentUserName = detectedUser;
+    window.currentUserName = currentUserName;
+    if(userNameSpan) userNameSpan.textContent = currentUserName;
+    localStorage.setItem('dashboard_username', currentUserName);
+    
+    loadUsageData();
+    
+    lastRecordCount = 0;
+    newRecordCount = 0;
+    
+    loadSheetData();
+    
+    setTimeout(() => {
+      restorePollingStates();
+    }, 1000);
+  }
+  
+  function parseDate(dateStr) {
+    if (!dateStr) return null;
+    
+    if (typeof dateStr === 'string' && dateStr.startsWith('Date(')) {
+      try {
+        const m = dateStr.match(/Date\((\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)/);
+        if (m) {
+          const [, y,mnth,d,h,mi,s] = m.map(Number);
+          return new Date(y,mnth,d,h,mi,s);
+        }
+      } catch {}
+    }
+    
+    if (typeof dateStr === 'string' && dateStr.includes('T') && (dateStr.includes('Z') || dateStr.includes('+'))) {
+      try {
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) return d;
+      } catch {}
+    }
+    
+    try {
+      const d = new Date(dateStr);
+      if (!isNaN(d.getTime())) return d;
+    } catch {}
+    
+    return null;
+  }
+
+  function formatDate(dateStr, colIndex) {
+    if (!dateStr) return "";
+    
+    if(typeof dateStr === "string" && dateStr.includes("Date(")) {
+      const m = dateStr.match(/Date\((\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)/);
+      if(m) {
+        const [, y,mnth,d,h,mi,s] = m.map(Number);
+        
+        const validHour = Math.max(0, Math.min(23, h));
+        const validMin = Math.max(0, Math.min(59, mi));
+        const validSec = Math.max(0, Math.min(59, s));
+        
+        let monthDisp = (mnth+1).toString().padStart(2,"0");
+        let dayDisp = d.toString().padStart(2,"0");
+        let yearDisp = y.toString().slice(-2);
+        let hDisp = validHour.toString().padStart(2,"0");
+        let minDisp = validMin.toString().padStart(2,"0");
+        let sDisp = validSec.toString().padStart(2,"0");
+        return `${monthDisp}/${dayDisp}/${yearDisp} ${hDisp}:${minDisp}:${sDisp}`;
+      }
+    }
+    
+    if (typeof dateStr === 'string' && (dateStr.includes('T') && (dateStr.includes('Z') || dateStr.includes('+')))) {
+      try {
+        const date = new Date(dateStr);
+        if (!isNaN(date.getTime())) {
+          let month = (date.getMonth()+1).toString().padStart(2,"0");
+          let day = date.getDate().toString().padStart(2,"0");
+          let year = date.getFullYear().toString().slice(-2);
+          let h = date.getHours().toString().padStart(2,"0");
+          let min = date.getMinutes().toString().padStart(2,"0");
+          let s = date.getSeconds().toString().padStart(2,"0");
+          return `${month}/${day}/${year} ${h}:${min}:${s}`;
+        }
+      } catch {}
+    }
+    
+    const date = parseDate(dateStr);
+    if (!date) return dateStr;
+    
+    let month = (date.getMonth()+1).toString().padStart(2,"0");
+    let day = date.getDate().toString().padStart(2,"0");
+    let year = date.getFullYear().toString().slice(-2);
+    let h = date.getHours().toString().padStart(2,"0");
+    let min = date.getMinutes().toString().padStart(2,"0");
+    let s = date.getSeconds().toString().padStart(2,"0");
+    return `${month}/${day}/${year} ${h}:${min}:${s}`;
+  }
+
+  function normalizeDate(dateStr) {
+    if (!dateStr) return "";
+    
+    if (typeof dateStr === 'string' && dateStr.match(/^\d{2}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}$/)) {
+      return dateStr;
+    }
+    
+    return formatDate(dateStr, 0);
+  }
+  
+  function loadSheetData() {
+    if (!currentUserName || !currentUserName.trim()) {
+      alert("Access denied: No valid username for data access.");
+      return;
+    }
+    
+    fetch(makeWebhookURL, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json" 
+      },
+      body: JSON.stringify({ 
+        username: currentUserName,
+        action: "getData"
+      })
+    }).then(response => {
+      if (!response.ok) throw new Error(`Status ${response.status}`);
+      return response.json();
+    }).then(data => {
+      try {
+        let records = [];
+        
+        if (Array.isArray(data) && data.length > 0) {
+          if (data[0] && data[0].body && Array.isArray(data[0].body)) {
+            records = data[0].body.map(item => item.data || item);
+          } else if (data[0] && data[0].data) {
+            records = data.map(item => item.data);
+          } else {
+            records = data;
+          }
+        } else if (data.results) {
+          if (typeof data.results === 'string') {
+            const jsonString = '[' + data.results + ']';
+            const parsedArray = JSON.parse(jsonString);
+            records = parsedArray.map(item => item.data || item);
+          } else if (Array.isArray(data.results)) {
+            records = data.results.map(item => item.data || item);
+          }
+        } else if (data.records && Array.isArray(data.records)) {
+          records = data.records.map(item => item.data || item);
+        } else if (data.data && Array.isArray(data.data)) {
+          records = data.data.map(item => item.data || item);
+        }
+        
+        if (records.length === 0) {
+          sheetData = [];
+          window.sheetData = sheetData;
+          recordsCountEl.textContent = `0 total records`;
+          newRecordCount = 0;
+          updateRefreshButtonText();
+          filterData();
+          return;
+        }
+        
+        sheetData = records.map(record => [
+          record["0"] || "",
+          normalizeDate(record["1"]) || "",
+          record["2"] || "",
+          record["3"] || "",
+          record["4"] || "",
+          record["5"] || "",
+          record["6"] || "",
+          record["7"] || "",
+          record["8"] || "",
+          record["9"] || "",
+          record["10"] || "",
+          record["11"] || "",
+          record["12"] || "",
+          record["13"] || "",
+          record["14"] || "",
+          record["15"] || "",
+          record["16"] || "",
+          normalizeDate(record["17"]) || "",
+          normalizeDate(record["18"]) || "",
+          record["19"] || "",
+          record["20"] || "",
+          record["21"] || "",
+          record["22"] || "",
+          record["23"] || ""
+        ]);
+        
+        window.sheetData = sheetData;
+        recordsCountEl.textContent = `${sheetData.length} total records`;
+        
+        const currentRecordCount = sheetData.length;
+        if (lastRecordCount > 0) {
+          newRecordCount = Math.max(0, currentRecordCount - lastRecordCount);
+          updateRefreshButtonText();
+        } else {
+          lastRecordCount = currentRecordCount;
+        }
+        
+        filterData();
+      } catch(e) {
+        sheetData = [];
+        window.sheetData = sheetData;
+        recordsCountEl.textContent = `0 total records`;
+        newRecordCount = 0;
+        updateRefreshButtonText();
+        filterData();
+      }
+    }).catch(e => {
+      if (e.name === 'TypeError' && e.message.includes('fetch')) {
+        sheetData = [];
+        window.sheetData = sheetData;
+        recordsCountEl.textContent = `Connection issue - please try again`;
+        newRecordCount = 0;
+        updateRefreshButtonText();
+      } else {
+        sheetData = [];
+        window.sheetData = sheetData;
+        recordsCountEl.textContent = `Data temporarily unavailable`;
+        newRecordCount = 0;
+        updateRefreshButtonText();
+      }
+    });
+  }
+  
+  let hiddenColIndexes = [];
+  const table = document.getElementById("dataTable");
+  if (table) {
+    table.querySelectorAll("colgroup col").forEach((col, i) => {
+      if (col.classList.contains("hidden-column")) hiddenColIndexes.push(i);
+    });
+  }
+  
+  function updatePaginationControls() {
+    const totalRecords = filteredData.length;
+    const totalPages = Math.ceil(totalRecords / recordsPerPage);
+    
+    const paginationContainer = document.getElementById('paginationBottom');
+    if (totalRecords === 0) {
+      paginationContainer.style.display = 'none';
+      return;
+    } else {
+      paginationContainer.style.display = 'block';
+    }
+    
+    const startRecord = (currentPage - 1) * recordsPerPage + 1;
+    const endRecord = Math.min(currentPage * recordsPerPage, totalRecords);
+    
+    const infoText = `Showing ${startRecord}-${endRecord} of ${totalRecords} records`;
+    document.getElementById('paginationInfoBottom').textContent = infoText;
+    
+    const prevBtn = document.getElementById('prevPageBtnBottom');
+    const nextBtn = document.getElementById('nextPageBtnBottom');
+    
+    prevBtn.disabled = currentPage === 1;
+    nextBtn.disabled = currentPage === totalPages || totalPages === 0;
+    
+    if (totalPages <= 1) {
+      document.querySelector('.pagination-controls').style.display = 'none';
+      document.getElementById('paginationInfoBottom').textContent = `Showing all ${totalRecords} records`;
+    } else {
+      document.querySelector('.pagination-controls').style.display = 'flex';
+      updatePageNumbers(totalPages);
+    }
+  }
+  
+  function updatePageNumbers(totalPages) {
+    const container = document.getElementById('pageNumbersBottom');
+    container.innerHTML = '';
+    
+    let startPage, endPage;
+    
+    if (totalPages <= 5) {
+      startPage = 1;
+      endPage = totalPages;
+    } else {
+      if (currentPage <= 2) {
+        startPage = 1;
+        endPage = 5;
+      } else if (currentPage >= totalPages - 1) {
+        startPage = totalPages - 4;
+        endPage = totalPages;
+      } else {
+        startPage = currentPage - 2;
+        endPage = currentPage + 2;
+      }
+    }
+    
+    for (let i = startPage; i <= endPage; i++) {
+      createPageButton(container, i);
+    }
+  }
+  
+  function createPageButton(container, pageNum) {
+    const btn = document.createElement('button');
+    btn.className = `page-number ${pageNum === currentPage ? 'active' : ''}`;
+    btn.textContent = pageNum;
+    btn.onclick = () => goToPage(pageNum);
+    container.appendChild(btn);
+  }
+  
+  function goToPage(page) {
+    const totalPages = Math.ceil(filteredData.length / recordsPerPage);
+    if (page >= 1 && page <= totalPages) {
+      currentPage = page;
+      updateTable(filteredData);
+    }
+  }
+  
+  function getCurrentPageData() {
+    const startIndex = (currentPage - 1) * recordsPerPage;
+    const endIndex = startIndex + recordsPerPage;
+    return filteredData.slice(startIndex, endIndex);
+  }
+  
+  const tbody = document.querySelector("#dataTable tbody");
+  
+  // Make updateTable globally accessible
+  function updateTable(data) {
+    if(!tbody) return;
+    
+    const currentPageData = getCurrentPageData();
+    
+    if(currentPageData.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="25">No results found</td></tr>';
+      if(recordsCountEl) recordsCountEl.textContent = "0 filtered records";
+      updatePaginationControls();
+      return;
+    }
+    
+    if(recordsCountEl) recordsCountEl.textContent = `${filteredData.length} filtered records`;
+    
+    let html = "";
+    currentPageData.forEach((row, rowIndex) => {
+      const actualRowIndex = (currentPage - 1) * recordsPerPage + rowIndex;
+      html += "<tr>";
+      row.forEach((cell,i) => {
+        let renderedCell = cell;
+        if(i === 0){
+          const starValue = row[0];
+          const isStarred = starValue === "1" || starValue === 1;
+          const filteredIndex = actualRowIndex;
+          
+          renderedCell = `<span class="star-icon ${isStarred ? 'active' : 'inactive'}" 
+                data-filtered-index="${filteredIndex}"
+                onclick="toggleResumeStar(this)"
+                title="${isStarred ? 'Remove from favorites' : 'Add to favorites'}">
+            ${isStarred ? '★' : '▢'}
+          </span>`;
+        } else if(i === 1){
+          renderedCell = formatDate(cell,i);
+        } else if(i === 2){
+          const jobTitleUrl = row[11] || "#";
+          renderedCell = `<a href="${jobTitleUrl}" target="_blank" rel="noopener noreferrer">${cell}</a>`;
+        } else if(i === 3){
+          const score = parseFloat(cell || 0);
+          let color = "#cccccc";
+          if(score >= 90) color = "#fe28da";
+          else if(score >= 80) color = "#d510ab";
+          else if(score >= 70) color = "#a710c1";
+          else if(score >= 60) color = "#7410d6";
+          else if(score < 60) color = "#140F3B";
+          
+          renderedCell = `<span class="score-circle" style="background-color:${color}" data-row-index="${actualRowIndex}" onclick="
+            var popup = document.getElementById('scorePopup');
+            if (popup) {
+              var rect = this.getBoundingClientRect();
+              var popupWidth = 420;
+              var popupHeight = 300;
+              var viewportWidth = window.innerWidth;
+              var viewportHeight = window.innerHeight;
+              
+              var leftPosition = rect.right + 20;
+              var topPosition = rect.top + (rect.height / 2) - (popupHeight / 2);
+              
+              if (leftPosition + popupWidth > viewportWidth - 10) {
+                leftPosition = rect.left - popupWidth - 20;
+              }
+              
+              if (topPosition < 10) topPosition = 10;
+              if (topPosition + popupHeight > viewportHeight - 10) {
+                topPosition = viewportHeight - popupHeight - 10;
+              }
+              
+              popup.style.position = 'fixed';
+              popup.style.left = leftPosition + 'px';
+              popup.style.top = topPosition + 'px';
+              popup.style.zIndex = '9999';
+              popup.style.display = 'block';
+              popup.style.visibility = 'visible';
+              popup.style.opacity = '1';
+              popup.classList.add('show');
+              
+              window.updateBarChart(${actualRowIndex});
+            }
+          ">${Math.round(score)}</span>`;
+        } else if(i === 5){
+          renderedCell = formatPhoneNumber(cell);
+        } else if(i === 10){
+          const resumeUrl = row[12] || "#";
+          if(resumeUrl && resumeUrl.trim() !== "" && resumeUrl !== "#"){
+            renderedCell = `<a href="${resumeUrl}" target="_blank" rel="noopener noreferrer" class="resume-button">View</a>`;
+          } else {
+            renderedCell = `N/A`;
+          }
+        } else if(i === 13){
+          const emailWebhookUrl = row[15] || "";
+          const lastEmailDateRaw = row[17] || "";
+          let stateObj = buttonStates.get(actualRowIndex);
+          if (!stateObj) {
+            stateObj = { email: 0, call: 0 };
+            buttonStates.set(actualRowIndex, stateObj);
+          }
+          
+          if (lastEmailDateRaw && lastEmailDateRaw.trim() !== "" && stateObj.email === 0) {
+            stateObj.email = 2;
+          }
+          
+          let btnLabel = "Email";
+          let btnColor = "#34495E";
+          if(stateObj.email === 1){
+            btnLabel = "Confirm";
+            btnColor = "#fe28da";
+          } else if(stateObj.email === 2) {
+            if(lastEmailDateRaw && lastEmailDateRaw.trim() !== ""){
+              btnLabel = formatDate(lastEmailDateRaw, 17);
+              btnColor = "#33495E";
+            } else {
+              btnLabel = "Email";
+              btnColor = "#34495E";
+              stateObj.email = 0;
+            }
+          }
+          
+          if(emailWebhookUrl && emailWebhookUrl.trim() !== "") {
+            renderedCell = `<button type="button" style="background-color:${btnColor}; color:white; border:none; padding:6px 12px; border-radius:30px; cursor:pointer; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;" class="interview-link-email-btn" data-row-index="${actualRowIndex}">${btnLabel}</button>`;
+          } else {
+            renderedCell = `<button type="button" style="background-color:#cccccc; color:#666; border:none; padding:6px 12px; border-radius:30px; cursor:not-allowed; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;" class="interview-link-email-btn-disabled" data-row-index="${actualRowIndex}" title="No webhook URL configured">${btnLabel}</button>`;
+            stateObj.email = 0;
+          }
+        } else if(i === 14){
+          const callWebhookUrl = row[16] || "";
+          const lastCallDateRaw = row[18] || "";
+          let stateObj = buttonStates.get(actualRowIndex);
+          if (!stateObj) {
+            stateObj = { email: 0, call: 0 };
+            buttonStates.set(actualRowIndex, stateObj);
+          }
+          
+          const isPolling = callPollingStates.has(actualRowIndex);
+          
+          if (lastCallDateRaw && lastCallDateRaw.trim() !== "" && stateObj.call === 0 && !isPolling) {
+            stateObj.call = 2;
+          }
+          
+          let btnLabel = "Call";
+          let btnColor = "#34495E";
+          let isDisabled = false;
+          
+          if(isPolling || stateObj.call === 3){
+            btnLabel = "Calling...";
+            btnColor = "#fe28da";
+            isDisabled = true;
+          } else if(stateObj.call === 1){
+            btnLabel = "Confirm";
+            btnColor = "#fe28da";
+          } else if(stateObj.call === 2) {
+            if(lastCallDateRaw && lastCallDateRaw.trim() !== ""){
+              btnLabel = formatDate(lastCallDateRaw, 18);
+              btnColor = "#33495E";
+            } else {
+              btnLabel = "Call";
+              btnColor = "#34495E";
+              stateObj.call = 0;
+            }
+          }
+          
+          if(callWebhookUrl && callWebhookUrl.trim() !== "") {
+            const disabledAttr = isDisabled ? 'disabled' : '';
+            const cursorStyle = isDisabled ? 'not-allowed' : 'pointer';
+            renderedCell = `<button type="button" ${disabledAttr} style="background-color:${btnColor}; color:white; border:none; padding:6px 12px; border-radius:30px; cursor:${cursorStyle}; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;" class="ai-agent-call-btn" data-row-index="${actualRowIndex}">${btnLabel}</button>`;
+          } else {
+            renderedCell = `<button type="button" style="background-color:#cccccc; color:#666; border:none; padding:6px 12px; border-radius:30px; cursor:not-allowed; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;" class="ai-agent-call-btn-disabled" data-row-index="${actualRowIndex}" title="No webhook URL configured">${btnLabel}</button>`;
+            stateObj.call = 0;
+          }
+        } else if(i === 17 || i === 18){
+          renderedCell = (typeof cell === "string" && cell.includes('Date(')) ? formatDate(cell,i) : cell;
+        }
+        const isHidden = hiddenColIndexes.includes(i);
+        
+        if (i === 0) {
+          html += `<td class="star-cell${isHidden ? ' hidden-column' : ''}">${renderedCell}</td>`;
+        } else {
+          html += `<td${isHidden ? ' class="hidden-column"' : ''}>${renderedCell}</td>`;
+        }
+      });
+      html += "</tr>";
+    });
+    tbody.innerHTML = html;
+    
+    // FIXED: Exclude star column from JavaScript styling
+    const nonStarCells = document.querySelectorAll('#dataTable td:not(.star-cell), #dataTable th:not(:first-child)');
+    nonStarCells.forEach(cell => {
+      cell.style.fontSize = '14px';
+      cell.style.fontFamily = 'Arial, sans-serif';
+      cell.style.webkitTextSizeAdjust = 'none';
+      cell.style.textSizeAdjust = 'none';
+      cell.style.zoom = '1';
+    });
+    
+    const scoreCircles = document.querySelectorAll('.score-circle');
+    scoreCircles.forEach(circle => {
+      circle.style.fontSize = '18px';
+      circle.style.fontWeight = 'bold';
+      circle.style.display = 'flex';
+      circle.style.alignItems = 'center';
+      circle.style.justifyContent = 'center';
+      circle.style.webkitTextSizeAdjust = 'none';
+      circle.style.textSizeAdjust = 'none';
+    });
+    
+    const resumeButtons = document.querySelectorAll('.resume-button');
+    resumeButtons.forEach(button => {
+      button.style.fontSize = '16px';
+      button.style.webkitTextSizeAdjust = 'none';
+      button.style.textSizeAdjust = 'none';
+    });
+    
+    const col8Cells = document.querySelectorAll('#dataTable td:nth-child(8)');
+    const col9Cells = document.querySelectorAll('#dataTable td:nth-child(9)');
+    
+    col8Cells.forEach(cell => {
+      cell.style.fontSize = '16px';
+      cell.style.fontFamily = 'Arial, sans-serif';
+      cell.style.lineHeight = '1.3';
+      cell.style.fontWeight = 'normal';
+      cell.style.webkitTextSizeAdjust = 'none';
+      cell.style.textSizeAdjust = 'none';
+    });
+    
+    col9Cells.forEach(cell => {
+      cell.style.fontSize = '16px';
+      cell.style.fontFamily = 'Arial, sans-serif';
+      cell.style.lineHeight = '1.3';
+      cell.style.fontWeight = 'normal';
+      cell.style.webkitTextSizeAdjust = 'none';
+      cell.style.textSizeAdjust = 'none';
+    });
+    
+    // Handle star column separately - only set safe properties
+    const starCells = document.querySelectorAll('#dataTable .star-cell');
+    starCells.forEach(cell => {
+      // Only set non-conflicting properties - let CSS handle the rest
+      cell.style.webkitTextSizeAdjust = 'none';
+      cell.style.textSizeAdjust = 'none';
+      cell.style.zoom = '1';
+      // Don't override fontSize, fontFamily, textAlign - let CSS handle these
+    });
+    
+    // Handle star header separately
+    const starHeader = document.querySelector('#dataTable th:first-child');
+    if (starHeader) {
+      starHeader.style.webkitTextSizeAdjust = 'none';
+      starHeader.style.textSizeAdjust = 'none';
+      starHeader.style.zoom = '1';
+      // Don't override other properties - let CSS handle them
+    }
+    
+    attachEmailButtons();
+    attachCallButtons();
+    updatePaginationControls();
+  }
+  
+  // Make updateTable globally accessible
+  window.updateTable = updateTable;
+  
+  function showAddonPopup(message) {
+    if(document.querySelector(".popup-overlay")) return;
+    const overlay = document.createElement("div");
+    overlay.className = "popup-overlay";
+    overlay.tabIndex = -1;
+    const content = document.createElement("div");
+    content.className = "popup-content";
+    content.role = "alertdialog";
+    content.ariaModal = "true";
+    const msgPara = document.createElement("p");
+    msgPara.className = "popup-message";
+    msgPara.textContent = message;
+    const btn = document.createElement("button");
+    btn.className = "popup-button";
+    btn.textContent = "OK";
+    btn.addEventListener("click", () => {
+      document.body.removeChild(overlay);
+    });
+    content.appendChild(msgPara);
+    content.appendChild(btn);
+    overlay.appendChild(content);
+    document.body.appendChild(overlay);
+    btn.focus();
+  }
+  
+  function attachEmailButtons() {
+    const emailButtons = document.querySelectorAll("button.interview-link-email-btn");
+    emailButtons.forEach(btn => {
+      btn.onclick = async function() {
+        const rowIndex = parseInt(btn.getAttribute("data-row-index"));
+        if(isNaN(rowIndex)) return;
+        const row = filteredData[rowIndex];
+        if(!row) return;
+        const emailWebhookUrl = row[15];
+        const lastEmailDateRaw = row[17] || "";
+        let stateObj = buttonStates.get(rowIndex);
+        if (!stateObj) {
+          stateObj = { email: 0, call: 0 };
+          buttonStates.set(rowIndex, stateObj);
+        }
+        
+        if(stateObj.email === 1){
+          const buttonKey = `email-${rowIndex}`;
+          clearButtonTimeout(buttonKey);
+          
+          if(!emailWebhookUrl || emailWebhookUrl.trim() === ""){
+            showAddonPopup("This feature is only available with AI Agent add-on.");
+            stateObj.email = 0;
+            updateTable(filteredData);
+            return;
+          }
+          btn.disabled = true;
+          btn.textContent = "Sending...";
+          try {
+            const resp = await fetch(emailWebhookUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ 
+                user: currentUserName,
+                candidatePhone: row[5] || "",
+                originalDate: formatDate(row[1], 1)
+              })
+            });
+            if(!resp.ok) throw new Error(`HTTP status ${resp.status}`);
+            
+            const responseData = await resp.json();
+            
+            stateObj.email = 2;
+            btn.textContent = "Email Sent";
+            btn.disabled = true;
+            
+            setTimeout(() => {
+              loadSheetData();
+              btn.disabled = false;
+            }, 2000);
+            
+          } catch(e) {
+            alert("Failed to send Email webhook: " + e.message);
+            btn.disabled = false;
+            btn.textContent = "Confirm";
+            stateObj.email = 0;
+            updateTable(filteredData);
+          }
+        } else {
+          stateObj.email = 1;
+          
+          const buttonKey = `email-${rowIndex}`;
+          
+          const previousState = (lastEmailDateRaw && lastEmailDateRaw.trim() !== "") ? 2 : 0;
+          setButtonTimeout(buttonKey, () => {
+            stateObj.email = previousState;
+            updateTable(filteredData);
+          });
+          
+          updateTable(filteredData);
+        }
+      };
+    });
+    
+    const disabledEmailButtons = document.querySelectorAll("button.interview-link-email-btn-disabled");
+    disabledEmailButtons.forEach(btn => {
+      btn.onclick = function() {
+        showAddonPopup("This feature is only available with AI Agent add-on.");
+      };
+    });
+  }
+  
+  function attachCallButtons() {
+    const callButtons = document.querySelectorAll("button.ai-agent-call-btn");
+    callButtons.forEach(btn => {
+      btn.onclick = async function() {
+        const rowIndex = parseInt(btn.getAttribute("data-row-index"));
+        if(isNaN(rowIndex)) return;
+        const row = filteredData[rowIndex];
+        if(!row) return;
+        const callWebhookUrl = row[16];
+        const lastCallDateRaw = row[18] || "";
+        let stateObj = buttonStates.get(rowIndex);
+        if (!stateObj) {
+          stateObj = { email: 0, call: 0 };
+          buttonStates.set(rowIndex, stateObj);
+        }
+        
+        if (callPollingStates.has(rowIndex)) {
+          return;
+        }
+        
+        if(stateObj.call === 0){
+          stateObj.call = 1;
+          
+          const buttonKey = `call-${rowIndex}`;
+          
+          setButtonTimeout(buttonKey, () => {
+            stateObj.call = 0;
+            updateTable(filteredData);
+          });
+          
+          updateTable(filteredData);
+          
+        } else if(stateObj.call === 1){
+          const activeCalls = countActiveCalls();
+          if (activeCalls >= 10) {
+            showAddonPopup("You have reached the max of 10 concurrent calls. Please wait for a call to end before starting another.");
+            stateObj.call = 0;
+            updateTable(filteredData);
+            return;
+          }
+          
+          const buttonKey = `call-${rowIndex}`;
+          clearButtonTimeout(buttonKey);
+          
+          if(!callWebhookUrl || callWebhookUrl.trim() === ""){
+            showAddonPopup("This feature is only available with AI Agent add-on.");
+            stateObj.call = 0;
+            updateTable(filteredData);
+            return;
+          }
+          
+          btn.disabled = true;
+          btn.textContent = "Starting...";
+          
+          try {
+            const resp = await fetch(callWebhookUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ 
+                user: currentUserName,
+                candidatePhone: row[5] || "",
+                originalDate: formatDate(row[1], 1)
+              })
+            });
+            if(!resp.ok) throw new Error(`HTTP status ${resp.status}`);
+            
+            const responseData = await resp.json();
+            
+            stateObj.call = 3;
+            btn.textContent = "Calling...";
+            btn.disabled = true;
+            
+            startCallPolling(rowIndex);
+            
+            updateTable(filteredData);
+          } catch(e) {
+            alert("Failed to start call: " + e.message);
+            btn.disabled = false;
+            btn.textContent = "Confirm";
+            stateObj.call = 0;
+            updateTable(filteredData);
+          }
+        } else if(stateObj.call === 2){
+          stateObj.call = 1;
+          
+          const buttonKey = `call-${rowIndex}`;
+          
+          setButtonTimeout(buttonKey, () => {
+            stateObj.call = 2;
+            updateTable(filteredData);
+          });
+          
+          updateTable(filteredData);
+        } else if(stateObj.call === 3){
+          return;
+        }
+      };
+    });
+    
+    const disabledCallButtons = document.querySelectorAll("button.ai-agent-call-btn-disabled");
+    disabledCallButtons.forEach(btn => {
+      btn.onclick = function() {
+        showAddonPopup("This feature is only available with AI Agent add-on.");
+      };
+    });
+  }
+  
+  function parseDateForSorting(dateStr) {
+    if (!dateStr || typeof dateStr !== 'string') return 0;
+    
+    if (dateStr.includes('Date(')) {
+      const match = dateStr.match(/Date\((\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)/);
+      if (match) {
+        const [, y, mo, d, hh, mm, ss] = match.map(Number);
+        return new Date(y, mo, d, hh, mm, ss).getTime();
+      }
+    }
+    
+    const parsedDate = new Date(dateStr);
+    return isNaN(parsedDate) ? 0 : parsedDate.getTime();
+  }
+
+  function filterData() {
+    const searchQuery = (document.getElementById("searchBox").value || "").toLowerCase();
+    
+    filteredData = sheetData.filter(row => {
+      if(!Array.isArray(row) || row.length < 6) return false;
+      
+      if (resumeShowStarredOnly) {
+        const isStarred = row[0] === "1" || row[0] === 1;
+        if (!isStarred) return false;
+      }
+      
+      const jobTitle = (row[2] || "").toLowerCase();
+      const candidateName = (row[4] || "").toLowerCase();
+      const candidateNumber = (row[5] || "").toLowerCase();
+      return jobTitle.includes(searchQuery) || candidateName.includes(searchQuery) || candidateNumber.includes(searchQuery);
+    });
+    
+    window.filteredData = filteredData;
+    
+    currentPage = 1;
+    buttonStates.clear();
+    
+    cleanupTimeouts();
+    
+    const table = document.getElementById("dataTable");
+    const manualSort = table && table.dataset.manualSort === "true";
+    if (!manualSort) {
+      filteredData.sort((a, b) => {
+        const dateA = parseDateForSorting(a[1]);
+        const dateB = parseDateForSorting(b[1]);
+        return dateB - dateA;
+      });
+      
+      if (table) {
+        const headers = table.querySelectorAll("th");
+        headers.forEach((th, i) => {
+          const arrow = th.querySelector('.sort-arrow');
+          if (arrow) {
+            arrow.textContent = (i === 1) ? "↓" : "⇅";
+          }
+        });
+        table.dataset.sortCol = "1";
+        table.dataset.sortDir = "desc";
+      }
+    }
+    updateTable(filteredData);
+  }
+  
+  // Make filterData globally accessible
+  window.filterData = filterData;
+  
+  window.sortTable = function(colIndex) {
+    const table = document.getElementById("dataTable");
+    const tbody = table.querySelector("tbody");
+    
+    if (!filteredData || filteredData.length === 0) return;
+    
+    table.dataset.manualSort = "true";
+    
+    const currentSortCol = table.dataset.sortCol !== undefined ? parseInt(table.dataset.sortCol) : -1;
+    const currentSortDir = table.dataset.sortDir || "";
+    let ascending = true;
+    
+    if (currentSortCol === colIndex && currentSortDir === "asc") {
+      ascending = false;
+    } else if (currentSortCol === colIndex && currentSortDir === "desc") {
+      ascending = true;
+    } else {
+      ascending = true;
+    }
+    
+    table.dataset.sortCol = colIndex.toString();
+    table.dataset.sortDir = ascending ? "asc" : "desc";
+    
+    filteredData.sort((a, b) => {
+      let valueA = a[colIndex] || "";
+      let valueB = b[colIndex] || "";
+      
+      if (colIndex === 0) {
+        valueA = parseInt(valueA) || 0;
+        valueB = parseInt(valueB) || 0;
+      } else if (colIndex === 1) {
+        valueA = parseDateForSorting(valueA);
+        valueB = parseDateForSorting(valueB);
+      } else if (colIndex === 3) {
+        valueA = parseFloat(valueA.toString().replace(/[^\d.]/g, "")) || 0;
+        valueB = parseFloat(valueB.toString().replace(/[^\d.]/g, "")) || 0;
+      } else {
+        valueA = valueA.toString().toLowerCase();
+        valueB = valueB.toString().toLowerCase();
+      }
+      
+      if (valueA === valueB) return 0;
+      const comparison = valueA > valueB ? 1 : -1;
+      return ascending ? comparison : -comparison;
+    });
+    
+    const headers = table.querySelectorAll("th");
+    headers.forEach((th, i) => {
+      const arrow = th.querySelector('.sort-arrow');
+      if (arrow) {
+        if (i === colIndex) {
+          arrow.textContent = ascending ? "↑" : "↓";
+        } else {
+          arrow.textContent = "⇅";
+        }
+      }
+    });
+    
+    currentPage = 1;
+    updateTable(filteredData);
+  };
+  
+  function updateRefreshButtonText() {
+    const btn = document.getElementById("refreshButton");
+    if (newRecordCount > 0) {
+      btn.textContent = `${newRecordCount} new resume${newRecordCount === 1 ? '' : 's'}`;
+      btn.classList.add('has-new-resumes');
+    } else {
+      btn.textContent = "0 new resume(s)";
+      btn.classList.remove('has-new-resumes');
+    }
+  }
+  
+  document.getElementById("refreshButton").addEventListener("click", () => {
+    const btn = document.getElementById("refreshButton");
+    
+    if (btn.disabled) return;
+    
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Refreshing...";
+    btn.style.backgroundColor = "#2C3E50";
+    btn.classList.remove('has-new-resumes');
+    
+    const currentBaseline = sheetData ? sheetData.length : 0;
+    localStorage.setItem('baselineRecordCount', currentBaseline.toString());
+    
+    const resetTimer = setTimeout(() => {
+      btn.disabled = false;
+      btn.style.backgroundColor = "#33495E";
+      btn.textContent = "0 new resume(s)";
+      btn.classList.remove('has-new-resumes');
+    }, 3000);
+    
+    const beforeRefreshCount = sheetData.length;
+    
+    try {
+      cleanupTimeouts();
+      
+      hiddenColIndexes = [];
+      const table = document.getElementById("dataTable");
+      if (table) {
+        table.querySelectorAll("colgroup col").forEach((col, i) => {
+          if (col.classList.contains("hidden-column")) hiddenColIndexes.push(i);
+        });
+        
+        delete table.dataset.manualSort;
+        delete table.dataset.sortCol;
+        delete table.dataset.sortDir;
+        
+        const headers = table.querySelectorAll("th");
+        headers.forEach(th => {
+          const arrow = th.querySelector('.sort-arrow');
+          if (arrow) arrow.textContent = "⇅";
+        });
+      }
+      
+      const savedUsername = localStorage.getItem('dashboard_username_verified');
+      if (savedUsername && savedUsername.trim()) {
+        currentUserName = savedUsername;
+        window.currentUserName = currentUserName;
+        if(userNameSpan) userNameSpan.textContent = currentUserName;
+        
+        lastRecordCount = beforeRefreshCount;
+        newRecordCount = 0;
+        
+        loadSheetData();
+        
+        setTimeout(() => {
+          restorePollingStates();
+        }, 500);
+      } else {
+        lastRecordCount = beforeRefreshCount;
+        newRecordCount = 0;
+        detectLoggedInUser();
+        
+        setTimeout(() => {
+          restorePollingStates();
+        }, 1000);
+      }
+    } catch (error) {
+      // Refresh error (button will still reset)
+    }
+  });
+  
+  document.getElementById("searchBox").addEventListener("input", filterData);
+  
+  document.getElementById("prevPageBtnBottom").addEventListener("click", () => goToPage(currentPage - 1));
+  document.getElementById("nextPageBtnBottom").addEventListener("click", () => goToPage(currentPage + 1));
+  
+  window.setupDescriptionToggle();
+  
+  detectLoggedInUser();
+  
+  window.updateBarChart = function(rowIndex) {
+    var rowData = window.filteredData ? window.filteredData[rowIndex] : null;
+    
+    var skillsScore = rowData ? parseScoreValue(rowData[19]) : 0;
+    var experienceScore = rowData ? parseScoreValue(rowData[20]) : 0;
+    var careerScore = rowData ? parseScoreValue(rowData[21]) : 0;
+    var educationScore = rowData ? parseScoreValue(rowData[22]) : 0;
+    var resumeScore = rowData ? parseScoreValue(rowData[23]) : 0;
+    
+    function getColor(score) {
+      if(score >= 90) return '#fe28da';
+      if(score >= 80) return '#d510ab';
+      if(score >= 70) return '#a710c1';
+      if(score >= 60) return '#7410d6';
+      return '#140F3B';
+    }
+    
+    var popup = document.getElementById('scorePopup');
+    if (!popup) return;
+    
+    var skillsBar = popup.querySelector('[data-category="skills"]');
+    var experienceBar = popup.querySelector('[data-category="experience"]');
+    var careerBar = popup.querySelector('[data-category="career"]');
+    var educationBar = popup.querySelector('[data-category="education"]');
+    var resumeBar = popup.querySelector('[data-category="resume"]');
+    
+    if (skillsBar) {
+      skillsBar.style.height = skillsScore + '%';
+      skillsBar.style.backgroundColor = getColor(skillsScore);
+      skillsBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + skillsScore + '</span>';
+      skillsBar.nextElementSibling.style.display = 'none';
+    }
+    if (experienceBar) {
+      experienceBar.style.height = experienceScore + '%';
+      experienceBar.style.backgroundColor = getColor(experienceScore);
+      experienceBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + experienceScore + '</span>';
+      experienceBar.nextElementSibling.style.display = 'none';
+    }
+    if (careerBar) {
+      careerBar.style.height = careerScore + '%';
+      careerBar.style.backgroundColor = getColor(careerScore);
+      careerBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + careerScore + '</span>';
+      careerBar.nextElementSibling.style.display = 'none';
+    }
+    if (educationBar) {
+      educationBar.style.height = educationScore + '%';
+      educationBar.style.backgroundColor = getColor(educationScore);
+      educationBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + educationScore + '</span>';
+      educationBar.nextElementSibling.style.display = 'none';
+    }
+    if (resumeBar) {
+      resumeBar.style.height = resumeScore + '%';
+      resumeBar.style.backgroundColor = getColor(resumeScore);
+      resumeBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + resumeScore + '</span>';
+      resumeBar.nextElementSibling.style.display = 'none';
+    }
+  };
+
+  const savedUsername = localStorage.getItem('dashboard_username_verified');
+  if (savedUsername && savedUsername.trim()) {
+    lastRecordCount = 0;
+    newRecordCount = 0;
+  }
+  
+  document.addEventListener('click', function(e) {
+    const popup = document.getElementById('scorePopup');
+    const scoreCircle = e.target.closest('.score-circle');
+    
+    if (!scoreCircle && popup && !popup.contains(e.target)) {
+      popup.classList.remove('show');
+      popup.style.display = 'none';
+    }
+  });
+  
+  if(!currentUserName || !currentUserName.trim()){
+    setTimeout(() => {
+      if(!currentUserName || !currentUserName.trim()){
+        const els = document.querySelectorAll('*');
+        for(const el of els){
+          if(el.textContent && el.textContent.match(/Hi,\s+[^\s,]+/)){
+            let match = el.textContent.match(/Hi,\s+([^\s,]+)/);
+            if(match && match[1]){
+              currentUserName = match[1];
+              window.currentUserName = currentUserName;
+              localStorage.setItem('dashboard_username_verified', currentUserName);
+              if(userNameSpan) userNameSpan.textContent = currentUserName;
+              
+              lastRecordCount = 0;
+              newRecordCount = 0;
+              
+              filterData();
+              break;
+            }
+          }
+        }
+        if(!currentUserName || !currentUserName.trim()) {
+          alert("Access denied: Unable to verify user identity.");
+          window.location.href = "/login";
+        }
+      }
+    }, 500);
+  }
+});
