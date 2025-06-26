@@ -45,7 +45,12 @@ function createSafeElement(tagName, attributes = {}, textContent = '') {
     if (key === 'href' && !validateUrl(value)) {
       continue; // Skip invalid URLs
     }
-    element.setAttribute(key, sanitizeInput(value));
+    // Don't sanitize numeric attributes like data-row-index, data-filtered-index
+    if (key.startsWith('data-') && !isNaN(value)) {
+      element.setAttribute(key, value);
+    } else {
+      element.setAttribute(key, sanitizeInput(value));
+    }
   }
   
   // Use textContent to prevent HTML injection
@@ -1931,7 +1936,8 @@ document.addEventListener("DOMContentLoaded", function() {
           
           const emailBtn = document.createElement('button');
           emailBtn.type = 'button';
-          emailBtn.setAttribute('data-row-index', actualRowIndex);
+          emailBtn.setAttribute('data-row-index', actualRowIndex); // Keep numeric value
+          emailBtn.setAttribute('data-original-row', (currentPage - 1) * recordsPerPage + rowIndex + 1); // Add original row number
           emailBtn.textContent = btnLabel;
           emailBtn.style.cssText = `background-color:${btnColor}; color:white; border:none; padding:6px 12px; border-radius:30px; cursor:pointer; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;`;
           
@@ -1986,7 +1992,8 @@ document.addEventListener("DOMContentLoaded", function() {
           
           const callBtn = document.createElement('button');
           callBtn.type = 'button';
-          callBtn.setAttribute('data-row-index', actualRowIndex);
+          callBtn.setAttribute('data-row-index', actualRowIndex); // Keep numeric value
+          callBtn.setAttribute('data-original-row', (currentPage - 1) * recordsPerPage + rowIndex + 1); // Add original row number
           callBtn.textContent = btnLabel;
           callBtn.disabled = isDisabled;
           const cursorStyle = isDisabled ? 'not-allowed' : 'pointer';
@@ -2123,6 +2130,7 @@ document.addEventListener("DOMContentLoaded", function() {
     emailButtons.forEach(btn => {
       btn.onclick = async function() {
         const rowIndex = parseInt(btn.getAttribute("data-row-index"));
+        const originalRowNumber = parseInt(btn.getAttribute("data-original-row"));
         if(isNaN(rowIndex)) return;
         const row = filteredData[rowIndex];
         if(!row) return;
@@ -2153,7 +2161,12 @@ document.addEventListener("DOMContentLoaded", function() {
               body: JSON.stringify({ 
                 user: currentUserName,
                 candidatePhone: row[5] || "",
-                originalDate: formatDate(row[1], 1)
+                candidateEmail: row[6] || "",
+                candidateName: row[4] || "",
+                jobTitle: row[2] || "",
+                originalDate: formatDate(row[1], 1),
+                rowNumber: originalRowNumber || rowIndex + 1,
+                rowIndex: rowIndex
               })
             });
             if(!resp.ok) throw new Error(`HTTP status ${resp.status}`);
@@ -2205,6 +2218,7 @@ document.addEventListener("DOMContentLoaded", function() {
     callButtons.forEach(btn => {
       btn.onclick = async function() {
         const rowIndex = parseInt(btn.getAttribute("data-row-index"));
+        const originalRowNumber = parseInt(btn.getAttribute("data-original-row"));
         if(isNaN(rowIndex)) return;
         const row = filteredData[rowIndex];
         if(!row) return;
@@ -2261,7 +2275,12 @@ document.addEventListener("DOMContentLoaded", function() {
               body: JSON.stringify({ 
                 user: currentUserName,
                 candidatePhone: row[5] || "",
-                originalDate: formatDate(row[1], 1)
+                candidateEmail: row[6] || "",
+                candidateName: row[4] || "",
+                jobTitle: row[2] || "",
+                originalDate: formatDate(row[1], 1),
+                rowNumber: originalRowNumber || rowIndex + 1,
+                rowIndex: rowIndex
               })
             });
             if(!resp.ok) throw new Error(`HTTP status ${resp.status}`);
