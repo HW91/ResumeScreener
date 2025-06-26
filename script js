@@ -1,3 +1,61 @@
+// XSS Protection Functions
+function escapeHtml(unsafe) {
+  if (typeof unsafe !== 'string') {
+    unsafe = String(unsafe);
+  }
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;")
+    .replace(/\//g, "&#x2F;");
+}
+
+function sanitizeInput(input) {
+  if (typeof input !== 'string') {
+    input = String(input);
+  }
+  // Remove potentially dangerous characters and scripts
+  return input
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+    .replace(/javascript:/gi, '')
+    .replace(/on\w+\s*=/gi, '')
+    .replace(/data:/gi, '')
+    .replace(/vbscript:/gi, '')
+    .trim();
+}
+
+function validateUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+    // Only allow http and https protocols
+    return ['http:', 'https:'].includes(parsedUrl.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function createSafeElement(tagName, attributes = {}, textContent = '') {
+  const element = document.createElement(tagName);
+  
+  // Safely set attributes
+  for (const [key, value] of Object.entries(attributes)) {
+    if (key === 'href' && !validateUrl(value)) {
+      continue; // Skip invalid URLs
+    }
+    element.setAttribute(key, sanitizeInput(value));
+  }
+  
+  // Use textContent to prevent HTML injection
+  if (textContent) {
+    element.textContent = sanitizeInput(textContent);
+  }
+  
+  return element;
+}
+
 // Fixed function to safely parse score values from Google Sheets
 function parseScoreValue(value) {
   if (value === undefined || value === null || value === '') {
@@ -922,7 +980,7 @@ document.addEventListener("DOMContentLoaded", function() {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          username: currentUsername,
+          username: sanitizeInput(currentUsername),
           action: 'getUsage'
         })
       });
@@ -941,7 +999,7 @@ document.addEventListener("DOMContentLoaded", function() {
         const creditsTotal = 100;
         const percentage = 0;
         progressBar.style.width = percentage + '%';
-        usageText.textContent = `${creditsUsed} of ${creditsTotal} credits used this month (${percentage}%)`;
+        usageText.textContent = sanitizeInput(`${creditsUsed} of ${creditsTotal} credits used this month (${percentage}%)`);
         return;
       }
       
@@ -960,14 +1018,14 @@ document.addEventListener("DOMContentLoaded", function() {
       }
       
       if (data.creditsUsed !== undefined && data.creditsTotal !== undefined) {
-        creditsUsed = parseValue(data.creditsUsed);
-        creditsTotal = parseValue(data.creditsTotal) || 100;
+        creditsUsed = parseValue(sanitizeInput(data.creditsUsed));
+        creditsTotal = parseValue(sanitizeInput(data.creditsTotal)) || 100;
       } else if (data.usage !== undefined) {
-        creditsUsed = parseValue(data.usage.used);
-        creditsTotal = parseValue(data.usage.total) || 100;
+        creditsUsed = parseValue(sanitizeInput(data.usage.used));
+        creditsTotal = parseValue(sanitizeInput(data.usage.total)) || 100;
       } else if (data.used !== undefined && data.total !== undefined) {
-        creditsUsed = parseValue(data.used);
-        creditsTotal = parseValue(data.total) || 100;
+        creditsUsed = parseValue(sanitizeInput(data.used));
+        creditsTotal = parseValue(sanitizeInput(data.total)) || 100;
       } else {
         const responseStr = JSON.stringify(data);
         const numbers = responseStr.match(/\d+/g);
@@ -980,7 +1038,7 @@ document.addEventListener("DOMContentLoaded", function() {
       const percentage = Math.min((creditsUsed / creditsTotal) * 100, 100);
       progressBar.style.width = percentage + '%';
       
-      usageText.textContent = `${creditsUsed} of ${creditsTotal} credits used this month (${Math.round(percentage)}%)`;
+      usageText.textContent = sanitizeInput(`${creditsUsed} of ${creditsTotal} credits used this month (${Math.round(percentage)}%)`);
       
     } catch (error) {
       usageText.textContent = 'Unable to load usage data';
@@ -1032,12 +1090,33 @@ document.addEventListener("DOMContentLoaded", function() {
     resumeCount++;
     const newWrapper = document.createElement("div");
     newWrapper.className = "resume-textarea-wrapper";
-    newWrapper.innerHTML = `<label for="roption3-${resumeCount}">Option 3: Paste Resume #${resumeCount}</label> <textarea id="roption3-${resumeCount}" name="roption3-${resumeCount}" class="resume-textarea" placeholder="Copy and paste your resume here"></textarea>
-  <small>You can resize this text box by dragging the bottom-right corner</small>
-  <button type="button" class="remove-resume-button" title="Remove this resume">×</button>
-`;
+    
+    // Create elements safely instead of using innerHTML
+    const label = createSafeElement('label', {
+      'for': `roption3-${resumeCount}`
+    }, `Option 3: Paste Resume #${resumeCount}`);
+    
+    const textarea = document.createElement('textarea');
+    textarea.id = `roption3-${resumeCount}`;
+    textarea.name = `roption3-${resumeCount}`;
+    textarea.className = 'resume-textarea';
+    textarea.placeholder = 'Copy and paste your resume here';
+    
+    const small = createSafeElement('small', {}, 'You can resize this text box by dragging the bottom-right corner');
+    
+    const removeBtn = createSafeElement('button', {
+      'type': 'button',
+      'class': 'remove-resume-button',
+      'title': 'Remove this resume'
+    }, '×');
+    
+    newWrapper.appendChild(label);
+    newWrapper.appendChild(textarea);
+    newWrapper.appendChild(small);
+    newWrapper.appendChild(removeBtn);
+    
     resumeContainer.appendChild(newWrapper);
-    const removeBtn = newWrapper.querySelector(".remove-resume-button");
+    
     removeBtn.addEventListener("click", () => {
       resumeContainer.removeChild(newWrapper);
       resumeCount--;
@@ -1166,8 +1245,10 @@ document.addEventListener("DOMContentLoaded", function() {
     const resumeVal = resumeSelect.value;
     const formResponse = document.getElementById("formResponse");
     formResponse.style.display = "none";
+    
     if (!jobVal) { alert("Please select a job source in Step 1."); jobSelect.focus(); return; }
     if (!resumeVal) { alert("Please select a resume source in Step 2."); resumeSelect.focus(); return; }
+    
     if (jobVal === "pasteText") {
       const jText = document.getElementById("joption3");
       if (!jText.value.trim()) { alert("Please paste a job description in the text box."); jText.focus(); return; }
@@ -1180,20 +1261,30 @@ document.addEventListener("DOMContentLoaded", function() {
         return;
       }
     }
+    
     showLoadingAnimation();
     try {
       let response;
       const originalFormData = new FormData(this);
-      originalFormData.set("username", extractUsername());
+      
+      // Sanitize username input
+      const sanitizedUsername = sanitizeInput(extractUsername());
+      originalFormData.set("username", sanitizedUsername);
       
       if (jobVal === "uploadFile") {
         const jobFileInput = document.getElementById("joption2");
         const jobFile = jobFileInput.files[0];
         if (!jobFile) throw new Error("Please upload a job description file.");
         
+        // Validate file type
+        const allowedTypes = ['application/pdf', 'text/plain', ''];
+        if (!allowedTypes.includes(jobFile.type) && !jobFile.name.toLowerCase().endsWith('.txt')) {
+          throw new Error("Invalid file type. Only PDF and TXT files are allowed.");
+        }
+        
         let jobText = "";
         if (jobFile.type === "application/pdf") {
-          jobText = await extractTextFromPDF(jobFile) || `[No text extracted from ${jobFile.name}]`;
+          jobText = await extractTextFromPDF(jobFile) || `[No text extracted from ${sanitizeInput(jobFile.name)}]`;
         } else if (/text\/plain/.test(jobFile.type) || jobFile.name.toLowerCase().endsWith(".txt") || jobFile.type === "") {
           jobText = await new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -1202,21 +1293,28 @@ document.addEventListener("DOMContentLoaded", function() {
             reader.readAsText(jobFile);
           });
         } else {
-          throw new Error(`Unsupported job file type: ${jobFile.name}`);
+          throw new Error(`Unsupported job file type: ${sanitizeInput(jobFile.name)}`);
         }
         
         originalFormData.delete("joption2");
-        originalFormData.set("joption3", jobText);
+        originalFormData.set("joption3", sanitizeInput(jobText));
       }
       
       if (resumeVal === "uploadFile") {
         const fileInput = document.getElementById("roption2");
         const files = fileInput.files;
         if (!files.length) throw new Error("Please upload at least one resume file.");
+        
         const extractedTexts = [];
         for (const file of files) {
+          // Validate file type
+          const allowedTypes = ['application/pdf', 'text/plain', ''];
+          if (!allowedTypes.includes(file.type) && !file.name.toLowerCase().endsWith('.txt')) {
+            throw new Error(`Invalid file type for ${sanitizeInput(file.name)}. Only PDF and TXT files are allowed.`);
+          }
+          
           if (file.type === "application/pdf") {
-            extractedTexts.push(await extractTextFromPDF(file) || `[No text extracted from ${file.name}]`);
+            extractedTexts.push(await extractTextFromPDF(file) || `[No text extracted from ${sanitizeInput(file.name)}]`);
           } else if (/text\/plain/.test(file.type) || file.name.toLowerCase().endsWith(".txt") || file.type === "") {
             extractedTexts.push(await new Promise((resolve, reject) => {
               const reader = new FileReader();
@@ -1225,12 +1323,12 @@ document.addEventListener("DOMContentLoaded", function() {
               reader.readAsText(file);
             }));
           } else {
-            throw new Error(`Unsupported file type: ${file.name}`);
+            throw new Error(`Unsupported file type: ${sanitizeInput(file.name)}`);
           }
         }
         
         originalFormData.delete("roption2");
-        extractedTexts.forEach((text, idx) => originalFormData.append(`roption3-${idx + 1}`, text));
+        extractedTexts.forEach((text, idx) => originalFormData.append(`roption3-${idx + 1}`, sanitizeInput(text)));
         window.uploadedResumeCount = extractedTexts.length;
       } else {
         window.uploadedResumeCount = countUploadedResumes(originalFormData);
@@ -1239,7 +1337,41 @@ document.addEventListener("DOMContentLoaded", function() {
       if (jobVal === "pasteText") {
         const jTextArea = document.getElementById("joption3");
         if (jTextArea && jTextArea.value.trim() !== "") {
-          originalFormData.set("joption3", jTextArea.value.trim());
+          originalFormData.set("joption3", sanitizeInput(jTextArea.value.trim()));
+        }
+      }
+      
+      if (jobVal === "publicURL") {
+        const jobUrl = document.getElementById("joption1").value.trim();
+        if (jobUrl && !validateUrl(jobUrl)) {
+          throw new Error("Invalid job URL. Please enter a valid HTTP or HTTPS URL.");
+        }
+        originalFormData.set("joption1", sanitizeInput(jobUrl));
+      }
+      
+      if (resumeVal === "publicURL") {
+        const resumeUrl = document.getElementById("roption1").value.trim();
+        if (resumeUrl && !validateUrl(resumeUrl)) {
+          throw new Error("Invalid resume URL. Please enter a valid HTTP or HTTPS URL.");
+        }
+        originalFormData.set("roption1", sanitizeInput(resumeUrl));
+      }
+      
+      // Sanitize text area inputs
+      if (resumeVal === "pasteText") {
+        const textareas = document.querySelectorAll(".resume-textarea");
+        textareas.forEach((textarea, index) => {
+          if (textarea.value.trim()) {
+            originalFormData.set(`roption3-${index + 1}`, sanitizeInput(textarea.value.trim()));
+          }
+        });
+      }
+      
+      // Sanitize question inputs
+      for (let i = 1; i <= 3; i++) {
+        const questionInput = document.getElementById(`question${i}`);
+        if (questionInput && questionInput.value.trim()) {
+          originalFormData.set(`question${i}`, sanitizeInput(questionInput.value.trim()));
         }
       }
       
@@ -1261,11 +1393,11 @@ document.addEventListener("DOMContentLoaded", function() {
       }, 5000);
 
     } catch (error) {
-      statusMessage.textContent = "Error submitting form. Please try again.";
+      statusMessage.textContent = sanitizeInput("Error submitting form. Please try again.");
       setTimeout(() => {
         loadingOverlay.style.display = "none";
       }, 3000);
-      formResponse.textContent = "There was a problem submitting your form. Please try again.";
+      formResponse.textContent = sanitizeInput("There was a problem submitting your form. Please try again.");
       formResponse.className = "form-response error";
       formResponse.style.display = "block";
     }
@@ -1434,7 +1566,7 @@ document.addEventListener("DOMContentLoaded", function() {
         "Content-Type": "application/json" 
       },
       body: JSON.stringify({ 
-        username: currentUserName,
+        username: sanitizeInput(currentUserName),
         action: "getData"
       })
     }).then(response => {
@@ -1469,42 +1601,43 @@ document.addEventListener("DOMContentLoaded", function() {
         if (records.length === 0) {
           sheetData = [];
           window.sheetData = sheetData;
-          recordsCountEl.textContent = `0 total records`;
+          recordsCountEl.textContent = "0 total records";
           newRecordCount = 0;
           updateRefreshButtonText();
           filterData();
           return;
         }
         
+        // Sanitize all data from external API
         sheetData = records.map(record => [
-          record["0"] || "",
-          normalizeDate(record["1"]) || "",
-          record["2"] || "",
-          record["3"] || "",
-          record["4"] || "",
-          record["5"] || "",
-          record["6"] || "",
-          record["7"] || "",
-          record["8"] || "",
-          record["9"] || "",
-          record["10"] || "",
-          record["11"] || "",
-          record["12"] || "",
-          record["13"] || "",
-          record["14"] || "",
-          record["15"] || "",
-          record["16"] || "",
-          normalizeDate(record["17"]) || "",
-          normalizeDate(record["18"]) || "",
-          record["19"] || "",
-          record["20"] || "",
-          record["21"] || "",
-          record["22"] || "",
-          record["23"] || ""
+          sanitizeInput(record["0"] || ""),
+          normalizeDate(sanitizeInput(record["1"] || "")),
+          sanitizeInput(record["2"] || ""),
+          sanitizeInput(record["3"] || ""),
+          sanitizeInput(record["4"] || ""),
+          sanitizeInput(record["5"] || ""),
+          sanitizeInput(record["6"] || ""),
+          sanitizeInput(record["7"] || ""),
+          sanitizeInput(record["8"] || ""),
+          sanitizeInput(record["9"] || ""),
+          sanitizeInput(record["10"] || ""),
+          sanitizeInput(record["11"] || ""),
+          sanitizeInput(record["12"] || ""),
+          sanitizeInput(record["13"] || ""),
+          sanitizeInput(record["14"] || ""),
+          sanitizeInput(record["15"] || ""),
+          sanitizeInput(record["16"] || ""),
+          normalizeDate(sanitizeInput(record["17"] || "")),
+          normalizeDate(sanitizeInput(record["18"] || "")),
+          sanitizeInput(record["19"] || ""),
+          sanitizeInput(record["20"] || ""),
+          sanitizeInput(record["21"] || ""),
+          sanitizeInput(record["22"] || ""),
+          sanitizeInput(record["23"] || "")
         ]);
         
         window.sheetData = sheetData;
-        recordsCountEl.textContent = `${sheetData.length} total records`;
+        recordsCountEl.textContent = sanitizeInput(`${sheetData.length} total records`);
         
         const currentRecordCount = sheetData.length;
         if (lastRecordCount > 0) {
@@ -1518,7 +1651,7 @@ document.addEventListener("DOMContentLoaded", function() {
       } catch(e) {
         sheetData = [];
         window.sheetData = sheetData;
-        recordsCountEl.textContent = `0 total records`;
+        recordsCountEl.textContent = "0 total records";
         newRecordCount = 0;
         updateRefreshButtonText();
         filterData();
@@ -1527,13 +1660,13 @@ document.addEventListener("DOMContentLoaded", function() {
       if (e.name === 'TypeError' && e.message.includes('fetch')) {
         sheetData = [];
         window.sheetData = sheetData;
-        recordsCountEl.textContent = `Connection issue - please try again`;
+        recordsCountEl.textContent = "Connection issue - please try again";
         newRecordCount = 0;
         updateRefreshButtonText();
       } else {
         sheetData = [];
         window.sheetData = sheetData;
-        recordsCountEl.textContent = `Data temporarily unavailable`;
+        recordsCountEl.textContent = "Data temporarily unavailable";
         newRecordCount = 0;
         updateRefreshButtonText();
       }
@@ -1639,7 +1772,13 @@ document.addEventListener("DOMContentLoaded", function() {
     const currentPageData = getCurrentPageData();
     
     if(currentPageData.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="25">No results found</td></tr>';
+      const noResultsRow = document.createElement('tr');
+      const noResultsCell = document.createElement('td');
+      noResultsCell.setAttribute('colspan', '25');
+      noResultsCell.textContent = 'No results found';
+      noResultsRow.appendChild(noResultsCell);
+      tbody.innerHTML = '';
+      tbody.appendChild(noResultsRow);
       if(recordsCountEl) recordsCountEl.textContent = "0 filtered records";
       updatePaginationControls();
       return;
@@ -1647,28 +1786,53 @@ document.addEventListener("DOMContentLoaded", function() {
     
     if(recordsCountEl) recordsCountEl.textContent = `${filteredData.length} filtered records`;
     
-    let html = "";
+    // Clear tbody and build table safely
+    tbody.innerHTML = '';
+    
     currentPageData.forEach((row, rowIndex) => {
       const actualRowIndex = (currentPage - 1) * recordsPerPage + rowIndex;
-      html += "<tr>";
-      row.forEach((cell,i) => {
-        let renderedCell = cell;
+      const tableRow = document.createElement('tr');
+      
+      row.forEach((cell, i) => {
+        const tableCell = document.createElement('td');
+        const isHidden = hiddenColIndexes.includes(i);
+        
+        if (i === 0) {
+          tableCell.className = `star-cell${isHidden ? ' hidden-column' : ''}`;
+        } else if (isHidden) {
+          tableCell.className = 'hidden-column';
+        }
+        
         if(i === 0){
           const starValue = row[0];
           const isStarred = starValue === "1" || starValue === 1;
           const filteredIndex = actualRowIndex;
           
-          renderedCell = `<span class="star-icon ${isStarred ? 'active' : 'inactive'}" 
-                data-filtered-index="${filteredIndex}"
-                onclick="toggleResumeStar(this)"
-                title="${isStarred ? 'Remove from favorites' : 'Add to favorites'}">
-            ${isStarred ? '★' : '▢'}
-          </span>`;
+          const starSpan = createSafeElement('span', {
+            'class': `star-icon ${isStarred ? 'active' : 'inactive'}`,
+            'data-filtered-index': filteredIndex,
+            'title': isStarred ? 'Remove from favorites' : 'Add to favorites'
+          }, isStarred ? '★' : '▢');
+          
+          starSpan.onclick = function() { toggleResumeStar(this); };
+          tableCell.appendChild(starSpan);
+          
         } else if(i === 1){
-          renderedCell = formatDate(cell,i);
+          tableCell.textContent = formatDate(sanitizeInput(cell), i);
+          
         } else if(i === 2){
-          const jobTitleUrl = row[11] || "#";
-          renderedCell = `<a href="${jobTitleUrl}" target="_blank" rel="noopener noreferrer">${cell}</a>`;
+          const jobTitleUrl = sanitizeInput(row[11] || "#");
+          if (validateUrl(jobTitleUrl)) {
+            const link = createSafeElement('a', {
+              'href': jobTitleUrl,
+              'target': '_blank',
+              'rel': 'noopener noreferrer'
+            }, sanitizeInput(cell));
+            tableCell.appendChild(link);
+          } else {
+            tableCell.textContent = sanitizeInput(cell);
+          }
+          
         } else if(i === 3){
           const score = parseFloat(cell || 0);
           let color = "#cccccc";
@@ -1678,7 +1842,13 @@ document.addEventListener("DOMContentLoaded", function() {
           else if(score >= 60) color = "#7410d6";
           else if(score < 60) color = "#140F3B";
           
-          renderedCell = `<span class="score-circle" style="background-color:${color}" data-row-index="${actualRowIndex}" onclick="
+          const scoreSpan = createSafeElement('span', {
+            'class': 'score-circle',
+            'data-row-index': actualRowIndex
+          }, Math.round(score).toString());
+          
+          scoreSpan.style.backgroundColor = color;
+          scoreSpan.onclick = function() {
             var popup = document.getElementById('scorePopup');
             if (popup) {
               var rect = this.getBoundingClientRect();
@@ -1708,21 +1878,31 @@ document.addEventListener("DOMContentLoaded", function() {
               popup.style.opacity = '1';
               popup.classList.add('show');
               
-              window.updateBarChart(${actualRowIndex});
+              window.updateBarChart(actualRowIndex);
             }
-          ">${Math.round(score)}</span>`;
+          };
+          tableCell.appendChild(scoreSpan);
+          
         } else if(i === 5){
-          renderedCell = formatPhoneNumber(cell);
+          tableCell.textContent = formatPhoneNumber(sanitizeInput(cell));
+          
         } else if(i === 10){
-          const resumeUrl = row[12] || "#";
-          if(resumeUrl && resumeUrl.trim() !== "" && resumeUrl !== "#"){
-            renderedCell = `<a href="${resumeUrl}" target="_blank" rel="noopener noreferrer" class="resume-button">View</a>`;
+          const resumeUrl = sanitizeInput(row[12] || "#");
+          if(resumeUrl && resumeUrl.trim() !== "" && resumeUrl !== "#" && validateUrl(resumeUrl)){
+            const link = createSafeElement('a', {
+              'href': resumeUrl,
+              'target': '_blank',
+              'rel': 'noopener noreferrer',
+              'class': 'resume-button'
+            }, 'View');
+            tableCell.appendChild(link);
           } else {
-            renderedCell = `N/A`;
+            tableCell.textContent = 'N/A';
           }
+          
         } else if(i === 13){
-          const emailWebhookUrl = row[15] || "";
-          const lastEmailDateRaw = row[17] || "";
+          const emailWebhookUrl = sanitizeInput(row[15] || "");
+          const lastEmailDateRaw = sanitizeInput(row[17] || "");
           let stateObj = buttonStates.get(actualRowIndex);
           if (!stateObj) {
             stateObj = { email: 0, call: 0 };
@@ -1749,15 +1929,27 @@ document.addEventListener("DOMContentLoaded", function() {
             }
           }
           
-          if(emailWebhookUrl && emailWebhookUrl.trim() !== "") {
-            renderedCell = `<button type="button" style="background-color:${btnColor}; color:white; border:none; padding:6px 12px; border-radius:30px; cursor:pointer; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;" class="interview-link-email-btn" data-row-index="${actualRowIndex}">${btnLabel}</button>`;
+          const emailBtn = document.createElement('button');
+          emailBtn.type = 'button';
+          emailBtn.setAttribute('data-row-index', actualRowIndex);
+          emailBtn.textContent = btnLabel;
+          emailBtn.style.cssText = `background-color:${btnColor}; color:white; border:none; padding:6px 12px; border-radius:30px; cursor:pointer; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;`;
+          
+          if(emailWebhookUrl && emailWebhookUrl.trim() !== "" && validateUrl(emailWebhookUrl)) {
+            emailBtn.className = 'interview-link-email-btn';
           } else {
-            renderedCell = `<button type="button" style="background-color:#cccccc; color:#666; border:none; padding:6px 12px; border-radius:30px; cursor:not-allowed; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;" class="interview-link-email-btn-disabled" data-row-index="${actualRowIndex}" title="No webhook URL configured">${btnLabel}</button>`;
+            emailBtn.className = 'interview-link-email-btn-disabled';
+            emailBtn.style.backgroundColor = '#cccccc';
+            emailBtn.style.color = '#666';
+            emailBtn.style.cursor = 'not-allowed';
+            emailBtn.title = 'No webhook URL configured';
             stateObj.email = 0;
           }
+          tableCell.appendChild(emailBtn);
+          
         } else if(i === 14){
-          const callWebhookUrl = row[16] || "";
-          const lastCallDateRaw = row[18] || "";
+          const callWebhookUrl = sanitizeInput(row[16] || "");
+          const lastCallDateRaw = sanitizeInput(row[18] || "");
           let stateObj = buttonStates.get(actualRowIndex);
           if (!stateObj) {
             stateObj = { email: 0, call: 0 };
@@ -1792,28 +1984,38 @@ document.addEventListener("DOMContentLoaded", function() {
             }
           }
           
-          if(callWebhookUrl && callWebhookUrl.trim() !== "") {
-            const disabledAttr = isDisabled ? 'disabled' : '';
-            const cursorStyle = isDisabled ? 'not-allowed' : 'pointer';
-            renderedCell = `<button type="button" ${disabledAttr} style="background-color:${btnColor}; color:white; border:none; padding:6px 12px; border-radius:30px; cursor:${cursorStyle}; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;" class="ai-agent-call-btn" data-row-index="${actualRowIndex}">${btnLabel}</button>`;
+          const callBtn = document.createElement('button');
+          callBtn.type = 'button';
+          callBtn.setAttribute('data-row-index', actualRowIndex);
+          callBtn.textContent = btnLabel;
+          callBtn.disabled = isDisabled;
+          const cursorStyle = isDisabled ? 'not-allowed' : 'pointer';
+          callBtn.style.cssText = `background-color:${btnColor}; color:white; border:none; padding:6px 12px; border-radius:30px; cursor:${cursorStyle}; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;`;
+          
+          if(callWebhookUrl && callWebhookUrl.trim() !== "" && validateUrl(callWebhookUrl)) {
+            callBtn.className = 'ai-agent-call-btn';
           } else {
-            renderedCell = `<button type="button" style="background-color:#cccccc; color:#666; border:none; padding:6px 12px; border-radius:30px; cursor:not-allowed; user-select:none; min-width:150px; width:150px; display:block !important; text-align:center !important; margin:0 auto;" class="ai-agent-call-btn-disabled" data-row-index="${actualRowIndex}" title="No webhook URL configured">${btnLabel}</button>`;
+            callBtn.className = 'ai-agent-call-btn-disabled';
+            callBtn.style.backgroundColor = '#cccccc';
+            callBtn.style.color = '#666';
+            callBtn.style.cursor = 'not-allowed';
+            callBtn.title = 'No webhook URL configured';
             stateObj.call = 0;
           }
+          tableCell.appendChild(callBtn);
+          
         } else if(i === 17 || i === 18){
-          renderedCell = (typeof cell === "string" && cell.includes('Date(')) ? formatDate(cell,i) : cell;
-        }
-        const isHidden = hiddenColIndexes.includes(i);
-        
-        if (i === 0) {
-          html += `<td class="star-cell${isHidden ? ' hidden-column' : ''}">${renderedCell}</td>`;
+          const cellValue = (typeof cell === "string" && cell.includes('Date(')) ? formatDate(cell, i) : cell;
+          tableCell.textContent = sanitizeInput(cellValue);
         } else {
-          html += `<td${isHidden ? ' class="hidden-column"' : ''}>${renderedCell}</td>`;
+          tableCell.textContent = sanitizeInput(cell);
         }
+        
+        tableRow.appendChild(tableCell);
       });
-      html += "</tr>";
+      
+      tbody.appendChild(tableRow);
     });
-    tbody.innerHTML = html;
     
     // FIXED: Exclude star column from JavaScript styling
     const nonStarCells = document.querySelectorAll('#dataTable td:not(.star-cell), #dataTable th:not(:first-child)');
@@ -1902,7 +2104,7 @@ document.addEventListener("DOMContentLoaded", function() {
     content.ariaModal = "true";
     const msgPara = document.createElement("p");
     msgPara.className = "popup-message";
-    msgPara.textContent = message;
+    msgPara.textContent = sanitizeInput(message); // XSS Protection
     const btn = document.createElement("button");
     btn.className = "popup-button";
     btn.textContent = "OK";
@@ -2351,36 +2553,28 @@ document.addEventListener("DOMContentLoaded", function() {
     var educationBar = popup.querySelector('[data-category="education"]');
     var resumeBar = popup.querySelector('[data-category="resume"]');
     
-    if (skillsBar) {
-      skillsBar.style.height = skillsScore + '%';
-      skillsBar.style.backgroundColor = getColor(skillsScore);
-      skillsBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + skillsScore + '</span>';
-      skillsBar.nextElementSibling.style.display = 'none';
+    function updateBar(bar, score) {
+      if (bar) {
+        bar.style.height = score + '%';
+        bar.style.backgroundColor = getColor(score);
+        
+        // Clear previous content and create score display safely
+        bar.innerHTML = '';
+        const scoreSpan = createSafeElement('span', {}, score.toString());
+        scoreSpan.style.cssText = 'position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);';
+        bar.appendChild(scoreSpan);
+        
+        if (bar.nextElementSibling) {
+          bar.nextElementSibling.style.display = 'none';
+        }
+      }
     }
-    if (experienceBar) {
-      experienceBar.style.height = experienceScore + '%';
-      experienceBar.style.backgroundColor = getColor(experienceScore);
-      experienceBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + experienceScore + '</span>';
-      experienceBar.nextElementSibling.style.display = 'none';
-    }
-    if (careerBar) {
-      careerBar.style.height = careerScore + '%';
-      careerBar.style.backgroundColor = getColor(careerScore);
-      careerBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + careerScore + '</span>';
-      careerBar.nextElementSibling.style.display = 'none';
-    }
-    if (educationBar) {
-      educationBar.style.height = educationScore + '%';
-      educationBar.style.backgroundColor = getColor(educationScore);
-      educationBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + educationScore + '</span>';
-      educationBar.nextElementSibling.style.display = 'none';
-    }
-    if (resumeBar) {
-      resumeBar.style.height = resumeScore + '%';
-      resumeBar.style.backgroundColor = getColor(resumeScore);
-      resumeBar.innerHTML = '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">' + resumeScore + '</span>';
-      resumeBar.nextElementSibling.style.display = 'none';
-    }
+    
+    updateBar(skillsBar, skillsScore);
+    updateBar(experienceBar, experienceScore);
+    updateBar(careerBar, careerScore);
+    updateBar(educationBar, educationScore);
+    updateBar(resumeBar, resumeScore);
   };
 
   const savedUsername = localStorage.getItem('dashboard_username_verified');
