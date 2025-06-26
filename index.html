@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, minimum-scale=1.0" />
+  <title>Resume Screener App</title>
+  <link rel="stylesheet" href="styles.css">
+  
+  <div class="header" style="display:none;">
+    <div class="user-info">
+      <a href="/account/profile" data-portal-profile="" title="Profile">
+        <span class="theme-portal-username" data-portal-user-name="">Hi, optiontrader91</span>
+      </a>
+    </div>
+  </div>
+  <div class="content">
+    <div class="usage-container" id="usageSection">
+      <h3 class="usage-title">Current Usage</h3>
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="usageProgressBar"></div>
+      </div>
+      <div class="usage-text" id="usageText">Loading usage data...</div>
+    </div>
+    
+    <div class="form-container" id="formSection">
+      <form id="customResumeForm" enctype="multipart/form-data" novalidate>
+        <input type="hidden" id="username" name="username" value="" />
+        <div class="form-field">
+          <label for="job">Step 1. Choose job source <span style="color: red;">*</span></label>
+          <select id="job" name="job" required>
+            <option value="">-- Select --</option>
+            <option value="publicURL">Public URL</option>
+            <option value="uploadFile">Upload File</option>
+            <option value="pasteText">Copy & Paste</option>
+            <option value="CRM">ATS/CRM (Coming soon!)</option>
+          </select>
+        </div>
+        <div class="form-field conditional-field job-field" id="joption1-container">
+          <label for="joption1">Option 1: Job URL</label>
+          <input type="text" id="joption1" name="joption1" />
+        </div>
+        <div class="form-field conditional-field job-field" id="joption2-container">
+          <label for="joption2">Option 2: Job Upload</label>
+          <input type="file" id="joption2" name="joption2" accept=".pdf,.doc,.docx,.txt" />
+          <small>Max file size: 1MB (single file only)</small>
+        </div>
+        <div class="form-field conditional-field job-field" id="joption3-container">
+          <label for="joption3">Option 3: Paste Job Description</label>
+          <textarea id="joption3" name="joption3" placeholder="Copy and paste your job description here"></textarea>
+          <small>You can resize this text box by dragging the bottom-right corner</small>
+        </div>
+        <div class="form-field">
+          <label for="resume">Step 2. Choose resume source <span style="color: red;">*</span></label>
+          <select id="resume" name="resume" required>
+            <option value="">-- Select --</option>
+            <option value="publicURL">Public URL</option>
+            <option value="uploadFile">Upload File(s)</option>
+            <option value="pasteText">Copy & Paste</option>
+            <option value="CRM">ATS/CRM (Coming soon!)</option>
+          </select>
+        </div>
+        <div class="form-field conditional-field resume-field" id="roption1-container">
+          <label for="roption1">Option 1: Resume URL</label>
+          <input type="text" id="roption1" name="roption1" />
+        </div>
+        <div class="form-field conditional-field resume-field" id="roption2-container">
+          <label for="roption2">Option 2: Resume Upload</label>
+          <input type="file" id="roption2" name="roption2" multiple accept=".pdf,.doc,.docx,.txt,.rtf" />
+          <small>Max file size: 1MB per file (up to 10 files)</small>
+        </div>
+        <div class="form-field conditional-field resume-field" id="roption3-container">
+          <div id="resume-textareas-container">
+            <div class="resume-textarea-wrapper">
+              <label for="roption3-1">Option 3: Paste Resume #1</label>
+              <textarea id="roption3-1" name="roption3-1" class="resume-textarea" placeholder="Copy and paste your resume here"></textarea>
+              <small>You can resize this text box by dragging the bottom-right corner</small>
+            </div>
+          </div>
+          <div class="add-resume-button-container">
+            <button type="button" id="add-resume-button" class="add-resume-button">
+              <span class="plus-icon">+</span> Add Another Resume
+            </button>
+            <small id="resume-count-info">1 of 10 resumes</small>
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="position">Step 3. Add additional screening questions:</label>
+          <select id="position" name="position">
+            <option value="">-- Select --</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+        <div class="form-field conditional-field question-field">
+          <label for="question1">Question 1: </label>
+          <input type="text" id="question1" name="question1" />
+        </div>
+        <div class="form-field conditional-field question-field">
+          <label for="question2">Question 2: </label>
+          <input type="text" id="question2" name="question2" />
+        </div>
+        <div class="form-field conditional-field question-field">
+          <label for="question3">Question 3: </label>
+          <input type="text" id="question3" name="question3" />
+        </div>
+        <button type="submit" class="submit-btn">Submit</button>
+      </form>
+      <div id="formResponse" class="form-response"></div>
+    </div>
+  </div>
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-container">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <circle id="spinner" class="circle spinning" cx="50" cy="50" r="45"></circle>
+        <path id="checkmark" class="check" d="M30 50 L45 65 L70 40" stroke-dasharray="57" stroke-dashoffset="57"></path>
+        <text id="loading-text" x="50" y="50">Processing...</text>
+      </svg>
+      <p id="status-message">Your resume and job files are being processed...</p>
+    </div>
+  </div>
+  
+  <!-- Score Popup Template -->
+  <div id="scorePopup" class="score-popup" onclick="event.stopPropagation();">
+    <div class="score-popup-header">
+      <div class="score-popup-title">Resume Analysis</div>
+      <div class="score-popup-subtitle">Score Breakdown • <span style="font-size: 12px; color: #999;">Drag anywhere to move</span></div>
+    </div>
+    
+    <div class="chart-container">
+      <div class="chart-bar">
+        <div class="bar-container">
+          <div class="bar-fill" data-category="skills"></div>
+          <div class="bar-percentage">0%</div>
+        </div>
+        <div class="bar-label">Skills</div>
+      </div>
+      
+      <div class="chart-bar">
+        <div class="bar-container">
+          <div class="bar-fill" data-category="experience"></div>
+          <div class="bar-percentage">0%</div>
+        </div>
+        <div class="bar-label">Experience</div>
+      </div>
+      
+      <div class="chart-bar">
+        <div class="bar-container">
+          <div class="bar-fill" data-category="career"></div>
+          <div class="bar-percentage">0%</div>
+        </div>
+        <div class="bar-label">Career</div>
+      </div>
+      
+      <div class="chart-bar">
+        <div class="bar-container">
+          <div class="bar-fill" data-category="education"></div>
+          <div class="bar-percentage">0%</div>
+        </div>
+        <div class="bar-label">Education</div>
+      </div>
+      
+      <div class="chart-bar">
+        <div class="bar-container">
+          <div class="bar-fill" data-category="resume"></div>
+          <div class="bar-percentage">0%</div>
+        </div>
+        <div class="bar-label">Resume</div>
+      </div>
+    </div>
+    
+    <div class="popup-footer">
+      <a href="#" class="full-description-link" onclick="
+        var details = document.getElementById('descriptionDetails');
+        if (details.style.display === 'block') {
+          details.style.display = 'none';
+          this.textContent = 'Full description';
+        } else {
+          details.style.display = 'block';
+          this.textContent = 'Hide description';
+        }
+        return false;
+      ">Full description</a>
+      
+      <div class="description-details" id="descriptionDetails" style="display: none;">
+        <div class="description-item">
+          <div class="description-title">Skills Match</div>
+          <div class="description-text">Match between listed skills (tools, technologies, methods) and job requirements.</div>
+        </div>
+        
+        <div class="description-item">
+          <div class="description-title">Relevant Experience</div>
+          <div class="description-text">Past roles, responsibilities, industries, and achievements that align with the job.</div>
+        </div>
+        
+        <div class="description-item">
+          <div class="description-title">Career Progression</div>
+          <div class="description-text">Growth trajectory, promotions, or increasing responsibility over time.</div>
+        </div>
+        
+        <div class="description-item">
+          <div class="description-title">Education & Credentials</div>
+          <div class="description-text">Degrees, certifications, or training relevant to the position.</div>
+        </div>
+        
+        <div class="description-item">
+          <div class="description-title">Resume Quality</div>
+          <div class="description-text">Professionalism, organization, grammar, formatting—indicates attention to detail and communication.</div>
+        </div>
+      </div>
+    </div>
+    
+    <button onclick="
+      var popup = document.getElementById('scorePopup');
+      popup.classList.remove('show');
+      popup.style.display = 'none';
+    " style="position: absolute; top: 10px; right: 10px; background: #ccc; border: none; border-radius: 50%; width: 25px; height: 25px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; line-height: 1;">×</button>
+  </div>
+
+  <div id="dashboardSection" style="max-width: 1500px; margin: 50px auto;">
+    <div id="userInfo">
+      Logged in as: <span id="currentUserName">Loading...</span>
+      <span class="user-badge">Active</span>
+      <span class="records-count" id="recordsCount"></span>
+    </div>
+    <div style="height: 20px;"></div>
+    <div id="search-container">
+      <input type="text" id="searchBox" placeholder="Search Job Title, Candidate Name, or Candidate Number..." aria-label="Search records" />
+      <button id="refreshButton" class="filter-toggle" type="button" aria-label="Refresh data">0 new resume(s)</button>
+    </div>
+    <div class="table-container">
+      <div id="dataTableWrapper">
+        <table id="dataTable" aria-describedby="recordsCount">
+          <colgroup>
+            <col style="width: 40px;">
+            <col style="width: 180px;">
+            <col style="width: 300px;">
+            <col style="width: 100px;">
+            <col style="width: 180px;">
+            <col style="width: 150px;">
+            <col style="width: 250px;">
+            <col style="width: 500px;">
+            <col style="width: 800px;">
+            <col class="hidden-column">
+            <col style="width: 200px;">
+            <col class="hidden-column">
+            <col class="hidden-column">
+            <col style="width: 200px;">
+            <col style="width: 200px;">
+            <col class="hidden-column">
+            <col class="hidden-column">
+            <col class="hidden-column">
+            <col class="hidden-column">
+            <col class="hidden-column">
+            <col class="hidden-column">
+            <col class="hidden-column">
+            <col class="hidden-column">
+            <col class="hidden-column">
+          </colgroup>
+          <thead>
+            <tr>
+              <th>
+                <span class="star-filter-header" id="starFilterHeader" onclick="event.stopPropagation(); toggleResumeStarFilter()" title="Show only starred candidates">★</span>
+              </th>
+              <th onclick="sortTable(1)" tabindex="0" role="button" aria-label="Sort by Date">Date <span class="sort-arrow">⇅</span></th>
+              <th onclick="sortTable(2)" tabindex="0" role="button" aria-label="Sort by Job Title">Job Title <span class="sort-arrow">⇅</span></th>
+              <th onclick="sortTable(3)" tabindex="0" role="button" aria-label="Sort by Score">Score <span class="sort-arrow">⇅</span></th>
+              <th onclick="sortTable(4)" tabindex="0" role="button" aria-label="Sort by Candidate Name">Candidate Name <span class="sort-arrow">⇅</span></th>
+              <th onclick="sortTable(5)" tabindex="0" role="button" aria-label="Sort by Phone">Phone <span class="sort-arrow">⇅</span></th>
+              <th onclick="sortTable(6)" tabindex="0" role="button" aria-label="Sort by Email">Email <span class="sort-arrow">⇅</span></th>
+              <th>Screening Questions</th>
+              <th>Summary</th>
+              <th class="hidden-column">Record Owner</th>
+              <th>Resume</th>
+              <th class="hidden-column">Job Description Source</th>
+              <th class="hidden-column">Resume Source</th>
+              <th>Interview Link</th>
+              <th>AI Agent Interview</th>
+              <th class="hidden-column">Email Webhook</th>
+              <th class="hidden-column">Call Webhook</th>
+              <th class="hidden-column">Last Email</th>
+              <th class="hidden-column">Last Call</th>
+              <th class="hidden-column">Skills Score</th>
+              <th class="hidden-column">Experience Score</th>
+              <th class="hidden-column">Career Score</th>
+              <th class="hidden-column">Education Score</th>
+              <th class="hidden-column">Resume Score</th>
+            </tr>
+          </thead>
+          <tbody>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    
+    <div class="pagination-container" id="paginationBottom">
+      <div>
+        <div class="pagination-info" id="paginationInfoBottom"></div>
+        <div class="pagination-controls">
+          <button id="prevPageBtnBottom" class="pagination-btn">&lt;</button>
+          <div class="page-numbers" id="pageNumbersBottom"></div>
+          <button id="nextPageBtnBottom" class="pagination-btn">&gt;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.9.179/pdf.min.js"></script>
+  <script src="script.js"></script>
+</html>
